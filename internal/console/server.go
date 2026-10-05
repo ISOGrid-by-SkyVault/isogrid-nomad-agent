@@ -25,7 +25,9 @@ import (
 	"time"
 
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/auth"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/builds"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/config"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/connections"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/docker"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/executor"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/store"
@@ -51,6 +53,8 @@ type Server struct {
 	Docker   *docker.Client
 	Services *executor.ServiceExecutor
 	Vault    *vault.Client
+	Sources  *connections.Manager
+	Builds   *builds.Runner
 	Stream   *stream.Client
 	Executor *executor.Executor
 	Logf     func(format string, args ...any)
@@ -96,6 +100,12 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/secrets", s.authed(s.secretsList))
 	mux.HandleFunc("PUT /api/secrets", s.mutating(s.authed(s.secretsWrite)))
 	mux.HandleFunc("DELETE /api/secrets", s.mutating(s.authed(s.secretsDelete)))
+	mux.HandleFunc("GET /api/connections", s.authed(s.connectionsList))
+	mux.HandleFunc("PUT /api/connections", s.mutating(s.authed(s.connectionsSave)))
+	mux.HandleFunc("DELETE /api/connections", s.mutating(s.authed(s.connectionsDelete)))
+	mux.HandleFunc("POST /api/connections/test", s.mutating(s.authed(s.connectionsTest)))
+	mux.HandleFunc("GET /api/builds", s.authed(s.buildsList))
+	mux.HandleFunc("GET /api/builds/{id}/log", s.authed(s.buildLog))
 	mux.HandleFunc("GET /api/settings", s.authed(s.settings))
 	mux.HandleFunc("POST /api/account/password", s.mutating(s.authed(s.changePassword)))
 	mux.HandleFunc("POST /api/account/totp/begin", s.mutating(s.authed(s.totpBegin)))

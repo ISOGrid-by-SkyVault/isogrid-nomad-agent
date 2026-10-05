@@ -197,6 +197,7 @@ details summary { cursor: pointer; font-size: 13px; color: var(--fg-soft); }
   white-space: pre-wrap;
   word-break: break-word;
 }
+.logbox.short { height: min(46vh, 420px); }
 .logbox .stderr { color: var(--danger); }
 .logtime { color: var(--fg-soft); user-select: none; }
 

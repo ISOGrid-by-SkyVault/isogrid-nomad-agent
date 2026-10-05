@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/auth"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/builds"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/config"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/connections"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/docker"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/executor"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/store"
@@ -169,11 +171,14 @@ func newHarness(t *testing.T) *harness {
 	}
 	t.Cleanup(func() { db.Close() })
 	engine := fakeEngine(t)
+	secrets := fakeVault(t)
+	sources := connections.New(connections.SQLStore{DB: db.DB()}, secrets)
 	logs := &bytes.Buffer{}
 	var logMu sync.Mutex
 	api := &Server{
 		Version: "test", Started: time.Now(), Config: config.Config{SampleInterval: 15 * time.Second, SampleRetention: time.Hour},
-		Store: db, Docker: engine, Services: executor.NewServiceExecutor(engine, "o1", nil), Vault: fakeVault(t),
+		Store: db, Docker: engine, Services: executor.NewServiceExecutor(engine, "o1", nil), Vault: secrets, Sources: sources,
+		Builds: &builds.Runner{Sources: sources, Docker: engine, Store: db, Dir: t.TempDir(), Logf: t.Logf},
 		Logf: func(format string, args ...any) {
 			logMu.Lock()
 			defer logMu.Unlock()
@@ -315,6 +320,41 @@ func TestConsoleFlow(t *testing.T) {
 	_, body = h.call("GET", "/api/secrets", nil, false)
 	if len(body["refs"].([]any)) != 1 {
 		t.Fatalf("after delete: %v", body["refs"])
+	}
+
+	// Connections: the credential goes to Vault under a reserved subtree
+	// that the Secrets section neither lists nor touches.
+	if code, body := h.call("PUT", "/api/connections", map[string]string{"name": "main-registry", "kind": "registry", "host": "https://Registry.Example.com/", "username": "robot", "secret": "r0bot-pass"}, true); code != 200 || body["host"] != "registry.example.com" {
+		t.Fatalf("connection save: %d %v", code, body)
+	}
+	if code, body := h.call("PUT", "/api/connections", map[string]string{"name": "gh", "kind": "github"}, true); code != http.StatusBadRequest {
+		t.Fatalf("a short name or a missing token was accepted: %d %v", code, body)
+	}
+	code, body = h.call("GET", "/api/connections", nil, false)
+	raw, _ = json.Marshal(body)
+	if code != 200 || len(body["connections"].([]any)) != 1 || strings.Contains(string(raw), "r0bot-pass") {
+		t.Fatalf("connection list: %d %s", code, raw)
+	}
+	_, body = h.call("GET", "/api/secrets", nil, false)
+	for _, ref := range body["refs"].([]any) {
+		if strings.HasPrefix(ref.(string), "connections/") {
+			t.Fatalf("the Secrets section lists a connection credential: %v", body["refs"])
+		}
+	}
+	if code, _ := h.call("PUT", "/api/secrets", map[string]string{"ref": "connections/main-registry", "value": "x"}, true); code != http.StatusBadRequest {
+		t.Fatalf("the Secrets section overwrote a connection credential: %d", code)
+	}
+	if code, _ := h.call("DELETE", "/api/secrets?ref=connections/main-registry", nil, true); code != http.StatusBadRequest {
+		t.Fatalf("the Secrets section deleted a connection credential: %d", code)
+	}
+	if code, body := h.call("GET", "/api/builds", nil, false); code != 200 || len(body["builds"].([]any)) != 0 {
+		t.Fatalf("builds: %d %v", code, body)
+	}
+	if code, _ := h.call("DELETE", "/api/connections?name=main-registry", nil, true); code != 200 {
+		t.Fatalf("connection delete: %d", code)
+	}
+	if code, _ := h.call("DELETE", "/api/connections?name=main-registry", nil, true); code != http.StatusNotFound {
+		t.Fatalf("second connection delete: %d", code)
 	}
 
 	// Activity and metrics read the store.

@@ -20,6 +20,7 @@
         "repository.commits",
         "registry.images",
         "build.run",
+        "build.status",
         "service.deploy",
         "service.scale",
         "service.rollback",

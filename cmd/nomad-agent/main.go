@@ -21,7 +21,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/builds"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/config"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/connections"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/console"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/docker"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/executor"
@@ -186,6 +188,22 @@ func run() error {
 		resolver = secrets
 	}
 
+	// Connections to the customer's code hosts and registries, and the
+	// builds that use them. Their credentials are in the Vault; without one
+	// they can be listed and nothing more.
+	var credentialStore connections.Vault
+	if secrets != nil {
+		credentialStore = secrets
+	}
+	sources := connections.New(connections.SQLStore{DB: db.DB()}, credentialStore)
+	if err := db.FailRunningBuilds(ctx); err != nil {
+		log.Printf("store: %v", err)
+	}
+	runner := &builds.Runner{
+		Sources: sources, Docker: engine, Store: db,
+		Dir: filepath.Join(cfg.DataDir, "builds"), Logf: log.Printf,
+	}
+
 	var (
 		client   *stream.Client
 		exec     *executor.Executor
@@ -199,6 +217,7 @@ func run() error {
 		exec = executor.New(intent.NewVerifier(public, cfg.OrganizationID, cfg.ClusterID), version, cfg.ClusterID)
 		exec.SetJournal(journal{db})
 		services = executor.RegisterServices(exec, engine, cfg.OrganizationID, resolver)
+		executor.RegisterSources(exec, services, sources, runner)
 		client, err = stream.New(stream.Options{
 			Inventory:      services.Inventory,
 			URL:            cfg.StreamURL,
@@ -228,7 +247,8 @@ func run() error {
 
 	api := &console.Server{
 		Version: version, Started: started, Config: cfg, Store: db, Docker: engine,
-		Services: services, Vault: secrets, Stream: client, Executor: exec, Logf: log.Printf,
+		Services: services, Vault: secrets, Sources: sources, Builds: runner,
+		Stream: client, Executor: exec, Logf: log.Printf,
 	}
 	if err := api.Init(ctx); err != nil {
 		return fmt.Errorf("console: %w", err)

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/connections"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/docker"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/intent"
 )
@@ -69,6 +70,9 @@ type DeployPayload struct {
 	//: Base64 of the registry credential JSON the daemon expects, when the
 	//: image is private. Resolved by the agent from a connection, later.
 	RegistryAuth string `json:"registry_auth"`
+	//: Name of a registry connection defined in the agent console. The
+	//: agent reads its credential from Vault; it wins over registry_auth.
+	RegistryConnection string `json:"registry_connection"`
 	//: When set, the service is created or updated but the intent returns
 	//: before the tasks converge.
 	NoWait bool `json:"no_wait"`
@@ -152,6 +156,7 @@ type ServiceExecutor struct {
 	docker  *docker.Client
 	orgID   string
 	secrets SecretResolver
+	sources *connections.Manager // nil until connections are registered
 }
 
 // SecretResolver turns references into values at deploy time. Nil until the
@@ -170,7 +175,8 @@ type NetworkInfo struct {
 // Inventory is what the agent tells the platform about the cluster on its
 // own: the overlay networks a service may attach to. Names and ids only.
 type Inventory struct {
-	Networks []NetworkInfo `json:"networks"`
+	Networks    []NetworkInfo         `json:"networks"`
+	Connections []connections.Summary `json:"connections"`
 }
 
 // Inventory reads the overlay networks, sorted by name.
@@ -184,6 +190,12 @@ func (s *ServiceExecutor) Inventory(ctx context.Context) (any, error) {
 		inv.Networks = append(inv.Networks, NetworkInfo{Name: n.Name, ID: n.ID, Attachable: n.Attachable})
 	}
 	sort.Slice(inv.Networks, func(i, j int) bool { return inv.Networks[i].Name < inv.Networks[j].Name })
+	inv.Connections = []connections.Summary{}
+	if s.sources != nil {
+		if inv.Connections, err = s.sources.Summaries(ctx); err != nil {
+			return nil, err
+		}
+	}
 	return inv, nil
 }
 
@@ -211,6 +223,16 @@ func (s *ServiceExecutor) deploy(ctx context.Context, env *intent.Envelope) (any
 	spec, err := s.buildSpec(ctx, &p, env)
 	if err != nil {
 		return nil, err
+	}
+	if p.RegistryConnection != "" {
+		// The credential comes from the customer's Vault, by the name of a
+		// connection; whatever the intent put in registry_auth is ignored.
+		if s.sources == nil {
+			return nil, errors.New("this agent has no connections; add the registry in the agent console")
+		}
+		if p.RegistryAuth, err = s.sources.RegistryAuth(ctx, p.RegistryConnection, p.Image); err != nil {
+			return nil, err
+		}
 	}
 	existing, err := s.docker.InspectService(ctx, p.Name)
 	switch {

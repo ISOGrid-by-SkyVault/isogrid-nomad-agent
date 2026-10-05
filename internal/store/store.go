@@ -51,6 +51,28 @@ CREATE TABLE IF NOT EXISTS intents (
 	duration_ms INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS intents_received ON intents(received_at DESC);
+CREATE TABLE IF NOT EXISTS connections (
+	name       TEXT PRIMARY KEY,
+	kind       TEXT NOT NULL,
+	host       TEXT NOT NULL DEFAULT '',
+	username   TEXT NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL,
+	created_by TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS builds (
+	id          TEXT PRIMARY KEY,
+	connection  TEXT NOT NULL,
+	repository  TEXT NOT NULL,
+	ref         TEXT NOT NULL,
+	commit_sha  TEXT NOT NULL DEFAULT '',
+	image       TEXT NOT NULL,
+	digest      TEXT NOT NULL DEFAULT '',
+	status      TEXT NOT NULL,
+	error       TEXT NOT NULL DEFAULT '',
+	started_at  INTEGER NOT NULL,
+	finished_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS builds_started ON builds(started_at DESC);
 CREATE TABLE IF NOT EXISTS samples (
 	service    TEXT NOT NULL,
 	ts         INTEGER NOT NULL,
@@ -79,6 +101,10 @@ func Open(dir string) (*Store, error) {
 	}
 	return &Store{db: db}, nil
 }
+
+// DB exposes the handle to packages that keep their own tables' queries
+// (connections), so the store does not have to import them.
+func (s *Store) DB() *sql.DB { return s.db }
 
 // Close releases the database.
 func (s *Store) Close() error { return s.db.Close() }
@@ -344,4 +370,96 @@ func (s *Store) Prune(ctx context.Context, sampleRetention time.Duration) error 
 		}
 	}
 	return nil
+}
+
+// -- builds -------------------------------------------------------------------------
+
+// Build is one image build the agent ran. Its output is a file beside the
+// database, never a column: it can be large and it never leaves this machine.
+type Build struct {
+	ID         string    `json:"id"`
+	Connection string    `json:"connection"`
+	Repository string    `json:"repository"`
+	Ref        string    `json:"ref"`
+	Commit     string    `json:"commit,omitempty"`
+	Image      string    `json:"image"`
+	Digest     string    `json:"digest,omitempty"`
+	Status     string    `json:"status"` // running | succeeded | failed
+	Error      string    `json:"error,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+}
+
+// CreateBuild records a build as it starts; false when the id already exists.
+func (s *Store) CreateBuild(ctx context.Context, b Build) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO builds (id, connection, repository, ref, image, status, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		b.ID, b.Connection, b.Repository, b.Ref, b.Image, b.Status, b.StartedAt.Unix())
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// UpdateBuild writes what a build learned or how it ended.
+func (s *Store) UpdateBuild(ctx context.Context, b Build) error {
+	finished := int64(0)
+	if !b.FinishedAt.IsZero() {
+		finished = b.FinishedAt.Unix()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE builds SET commit_sha = ?, digest = ?, status = ?, error = ?, finished_at = ? WHERE id = ?`,
+		b.Commit, b.Digest, b.Status, b.Error, finished, b.ID)
+	return err
+}
+
+const buildColumns = `id, connection, repository, ref, commit_sha, image, digest, status, error, started_at, finished_at`
+
+func scanBuild(scan func(dest ...any) error) (*Build, error) {
+	var b Build
+	var started, finished int64
+	if err := scan(&b.ID, &b.Connection, &b.Repository, &b.Ref, &b.Commit, &b.Image, &b.Digest, &b.Status, &b.Error, &started, &finished); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	b.StartedAt = time.Unix(started, 0)
+	if finished > 0 {
+		b.FinishedAt = time.Unix(finished, 0)
+	}
+	return &b, nil
+}
+
+// GetBuild finds a build by id.
+func (s *Store) GetBuild(ctx context.Context, id string) (*Build, error) {
+	return scanBuild(s.db.QueryRowContext(ctx, `SELECT `+buildColumns+` FROM builds WHERE id = ?`, id).Scan)
+}
+
+// ListBuilds returns the newest builds.
+func (s *Store) ListBuilds(ctx context.Context, limit int) ([]Build, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+buildColumns+` FROM builds ORDER BY started_at DESC, id LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Build{}
+	for rows.Next() {
+		b, err := scanBuild(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *b)
+	}
+	return out, rows.Err()
+}
+
+// FailRunningBuilds marks builds left running by a previous process: the
+// agent restarted under them and nothing will finish them.
+func (s *Store) FailRunningBuilds(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE builds SET status = 'failed', error = 'The agent restarted while this build was running', finished_at = ? WHERE status = 'running'`,
+		time.Now().Unix())
+	return err
 }

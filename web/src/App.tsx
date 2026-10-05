@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ApiError, get, post, type Session } from "./api";
+import { BuildsPage, ConnectionsPage } from "./sources";
 import { ActivityPage, DeploymentsPage, LogsPage, OverviewPage, PerformancePage, SecretsPage, SettingsPage } from "./pages";
 
 // Each section is served by the agent itself and reads only local state:
@@ -7,6 +8,8 @@ import { ActivityPage, DeploymentsPage, LogsPage, OverviewPage, PerformancePage,
 const SECTIONS = [
   { id: "overview", label: "Overview" },
   { id: "deployments", label: "Deployments" },
+  { id: "builds", label: "Builds" },
+  { id: "connections", label: "Connections" },
   { id: "secrets", label: "Secrets" },
   { id: "logs", label: "Logs" },
   { id: "performance", label: "Performance" },
@@ -181,6 +184,8 @@ export function App() {
             }}
           />
         )}
+        {section === "builds" && <BuildsPage />}
+        {section === "connections" && <ConnectionsPage />}
         {section === "secrets" && <SecretsPage />}
         {section === "logs" && <LogsPage service={logService} setService={setLogService} />}
         {section === "performance" && <PerformancePage />}

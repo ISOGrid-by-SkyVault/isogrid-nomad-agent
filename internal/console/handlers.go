@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/auth"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/connections"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/docker"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/store"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/vault"
@@ -168,7 +170,13 @@ func (s *Server) secretsList(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			body["error"] = err.Error()
 		} else {
-			body["refs"] = refs
+			visible := make([]string, 0, len(refs))
+			for _, ref := range refs {
+				if !strings.HasPrefix(ref, connections.RefPrefix) {
+					visible = append(visible, ref)
+				}
+			}
+			body["refs"] = visible
 			body["truncated"] = truncated
 		}
 	}
@@ -185,6 +193,10 @@ func (s *Server) secretsWrite(w http.ResponseWriter, r *http.Request) {
 		Value string `json:"value"`
 	}
 	if !decode(w, r, &in) {
+		return
+	}
+	if reserved(in.Ref) {
+		fail(w, http.StatusBadRequest, "reserved", "References under connections/ belong to the Connections section")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -207,6 +219,10 @@ func (s *Server) secretsDelete(w http.ResponseWriter, r *http.Request) {
 	ref, err := vault.CleanRef(r.URL.Query().Get("ref"))
 	if err != nil {
 		fail(w, http.StatusBadRequest, "bad_ref", capitalise(err.Error()))
+		return
+	}
+	if reserved(ref) {
+		fail(w, http.StatusBadRequest, "reserved", "References under connections/ belong to the Connections section")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
