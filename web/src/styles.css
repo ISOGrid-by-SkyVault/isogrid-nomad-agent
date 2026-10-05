@@ -54,6 +54,8 @@ nav button {
 }
 nav button.active { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
 nav button:disabled { color: var(--fg-soft); cursor: default; opacity: 0.7; }
+nav button { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.soon { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); }
 .rail-note { margin-top: auto; font-size: 13px; color: var(--fg-soft); }
 main { flex: 1; padding: 28px clamp(16px, 4vw, 40px); }
 h1 { margin: 0 0 20px; font-size: 22px; }

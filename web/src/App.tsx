@@ -96,7 +96,8 @@ export function App() {
               onClick={() => setSection(s.id)}
               title={s.ready ? undefined : "Not built yet"}
             >
-              {s.label}
+              <span>{s.label}</span>
+              {!s.ready && <span className="soon">soon</span>}
             </button>
           ))}
         </nav>
