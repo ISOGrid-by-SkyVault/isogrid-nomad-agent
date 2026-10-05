@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/intents/schema.json",
+  "title": "ISOGrid Nomad intent envelope, version 1 (draft)",
+  "description": "Every message the ISOGrid control plane sends to an agent. The envelope is signed; the agent verifies the signature, the organization, the cluster and the freshness of the message before it looks at the payload. No intent carries a shell command, a secret value, or a path outside the agent's own data directory.",
+  "type": "object",
+  "required": ["version", "id", "kind", "organization_id", "cluster_id", "issued_at", "expires_at", "nonce", "payload", "signature"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "id": { "type": "string", "format": "uuid", "description": "Idempotency key. The agent records every id it has executed and answers a repeat with the stored result." },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "ping",
+        "capabilities.describe",
+        "repositories.list",
+        "repository.refs",
+        "repository.commits",
+        "registry.images",
+        "build.run",
+        "service.deploy",
+        "service.scale",
+        "service.rollback",
+        "service.remove",
+        "service.status",
+        "job.run",
+        "config.write",
+        "secrets.references"
+      ]
+    },
+    "organization_id": { "type": "string" },
+    "cluster_id": { "type": "string" },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time", "description": "Intents older than this are dropped, so a replayed message cannot execute later." },
+    "nonce": { "type": "string", "minLength": 16 },
+    "reply_to": { "type": "string", "description": "Queue the agent answers on. Replies carry the intent id, a status and a payload that never includes secret values or log lines." },
+    "payload": { "type": "object" },
+    "signature": { "type": "string", "description": "Ed25519 signature over the canonical JSON of every other field, made with the control plane's per-organization key." }
+  },
+  "$defs": {
+    "secretReference": {
+      "type": "object",
+      "description": "How the control plane names a secret. The agent reads the value from the customer's Vault at execution time; the value never travels.",
+      "required": ["key", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "key": { "type": "string", "description": "Environment variable name or file name inside the container." },
+        "ref": { "type": "string", "description": "Path below the agent's Vault prefix, for example apps/billing/DATABASE_URL." },
+        "as": { "type": "string", "enum": ["env", "file"], "default": "env" }
+      }
+    }
+  }
+}

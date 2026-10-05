@@ -1,0 +1,22 @@
+# Build output
+/nomad-agent
+/dist/
+/bin/
+# Frontend build: embedded at build time, never committed (the .gitkeep stays
+# so `go build` works on a fresh clone)
+/web/dist/*
+!/web/dist/.gitkeep
+/web/node_modules/
+/web/*.tsbuildinfo
+# Local state while developing
+/data/
+*.db
+*.db-wal
+*.db-shm
+# Local configuration
+.env
+*.local
+# Editors
+.idea/
+.vscode/
+.DS_Store

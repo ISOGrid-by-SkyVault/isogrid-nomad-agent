@@ -1,0 +1,79 @@
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #16181d;
+  --fg-soft: #5b6270;
+  --line: #e3e6eb;
+  --accent: #1f6feb;
+  --danger: #b42318;
+  --danger-bg: #fef3f2;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115;
+    --surface: #171a21;
+    --fg: #e8eaee;
+    --fg-soft: #9aa3b2;
+    --line: #262b36;
+    --accent: #6ea8ff;
+    --danger: #f97066;
+    --danger-bg: #2a1614;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.shell { display: flex; min-height: 100vh; }
+.rail {
+  width: 240px;
+  flex: none;
+  padding: 20px 16px;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+.brand-mark { width: 14px; height: 14px; border-radius: 4px; background: var(--accent); }
+nav { display: flex; flex-direction: column; gap: 2px; }
+nav button {
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+nav button.active { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+nav button:disabled { color: var(--fg-soft); cursor: default; opacity: 0.7; }
+.rail-note { margin-top: auto; font-size: 13px; color: var(--fg-soft); }
+main { flex: 1; padding: 28px clamp(16px, 4vw, 40px); }
+h1 { margin: 0 0 20px; font-size: 22px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.card.error { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); margin-bottom: 16px; }
+.label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-soft); }
+.value { font-size: 20px; font-weight: 600; }
+.hint { font-size: 13px; color: var(--fg-soft); }
+@media (max-width: 720px) {
+  .shell { flex-direction: column; }
+  .rail { width: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  nav { flex-direction: row; flex-wrap: wrap; }
+  .rail-note { margin-top: 0; }
+}
