@@ -182,10 +182,18 @@ Built:
   agent's log, Argon2id passwords, optional TOTP, and the Overview,
   Deployments, Secrets, Logs, Performance, Activity and Settings sections.
 
-Next: connections to GitHub, GitLab and container registries held on the
-agent side, `build.run`, an approval step for deploys an operator wants to
-review, a log store with its own retention (logs are read from the engine
-today), and the Kubernetes executor.
+- connections to GitHub, GitLab and container registries, held on the agent
+  side, and `build.run` through them. A connection is made in the console
+  with a token of yours, or handed over by ISOGrid when a person connecting
+  GitHub, GitLab or a registry there chooses "on my Nomad agent": the
+  `connection.put` intent carries the credential once into your Vault and
+  ISOGrid keeps only the name (`connection.remove` withdraws it). For GitHub,
+  ISOGrid forwards its App's one-hour tokens and renews them. The agent never
+  lets ISOGrid overwrite or remove a connection an operator made here.
+
+Next: an approval step for deploys an operator wants to review, a log store
+with its own retention (logs are read from the engine today), and the
+Kubernetes executor.
 
 ## The console
 

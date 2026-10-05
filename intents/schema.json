@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/intents/schema.json",
   "title": "ISOGrid Nomad intent envelope, version 1 (draft)",
-  "description": "Every message the ISOGrid control plane sends to an agent. The envelope is signed; the agent verifies the signature, the organization, the cluster and the freshness of the message before it looks at the payload. No intent carries a shell command, a secret value, or a path outside the agent's own data directory.",
+  "description": "Every message the ISOGrid control plane sends to an agent. The envelope is signed; the agent verifies the signature, the organization, the cluster and the freshness of the message before it looks at the payload. No intent carries a shell command or a path outside the agent's own data directory. The one exception on secret values is connection.put: when a person chooses, on ISOGrid, to keep a GitHub, GitLab or registry credential on their agent rather than on the platform, that credential travels once in this intent and goes straight into the customer's Vault.",
   "type": "object",
   "required": ["version", "id", "kind", "organization_id", "cluster_id", "issued_at", "expires_at", "nonce", "payload", "signature"],
   "additionalProperties": false,
@@ -28,7 +28,9 @@
         "service.status",
         "job.run",
         "config.write",
-        "secrets.references"
+        "secrets.references",
+        "connection.put",
+        "connection.remove"
       ]
     },
     "organization_id": { "type": "string" },

@@ -242,6 +242,9 @@ type Summary struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
 	Host string `json:"host"`
+	// Who made it: an operator's name from the console, or "isogrid" for a
+	// credential the person chose to keep here rather than on the platform.
+	CreatedBy string `json:"created_by,omitempty"`
 }
 
 // Summaries lists the connections for the inventory.
@@ -252,7 +255,7 @@ func (m *Manager) Summaries(ctx context.Context) ([]Summary, error) {
 	}
 	out := make([]Summary, 0, len(list))
 	for _, c := range list {
-		out = append(out, Summary{Name: c.Name, Kind: c.Kind, Host: c.Host})
+		out = append(out, Summary{Name: c.Name, Kind: c.Kind, Host: c.Host, CreatedBy: c.CreatedBy})
 	}
 	return out, nil
 }
