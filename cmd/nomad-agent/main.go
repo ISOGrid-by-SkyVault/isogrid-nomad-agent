@@ -23,6 +23,9 @@ import (
 	"time"
 
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/config"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/executor"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/intent"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/stream"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/web"
 )
 
@@ -57,9 +60,9 @@ func usage(w *os.File) {
 	fmt.Fprintf(w, "ISOGrid Nomad agent %s\n\nUsage: nomad-agent <command>\n\n  run       start the agent and its operator frontend (default)\n  check     validate the configuration and what it points at\n  version   print the version\n", version)
 }
 
-// check validates the configuration and reports what the agent would use.
-// Reachability checks for Docker, Vault and the stream join it with the
-// components that implement them.
+// check validates the configuration and the identity files, and reports what
+// the agent would use. Reachability checks for Docker and Vault join it with
+// the components that implement them.
 func check() error {
 	cfg, err := config.FromEnv()
 	if err != nil {
@@ -71,6 +74,25 @@ func check() error {
 	}
 	fmt.Printf("frontend   %s\ndata dir   %s\nmode       %s\ndocker     %s\nvault      %s (mount %s, prefix %s)\n",
 		cfg.Listen, cfg.DataDir, mode, cfg.DockerHost, orNone(cfg.VaultAddr), cfg.VaultMount, cfg.VaultPrefix)
+	if !cfg.Attached() {
+		return nil
+	}
+	key, err := stream.LoadKey(cfg.ClientKeyFile)
+	if err != nil {
+		return fmt.Errorf("client key: %w", err)
+	}
+	_, cert, err := stream.LoadCertificate(cfg.ClientCertFile)
+	if err != nil {
+		return fmt.Errorf("client certificate: %w", err)
+	}
+	if !key.PublicKey.Equal(cert.PublicKey) {
+		return errors.New("the client key does not match the client certificate")
+	}
+	if _, err := intent.LoadPublicKey(cfg.IntentPublicKeyFile); err != nil {
+		return fmt.Errorf("intent public key: %w", err)
+	}
+	fmt.Printf("identity   %s, valid until %s\ncluster    %s\norg        %s\n",
+		cert.Subject.CommonName, cert.NotAfter.UTC().Format(time.RFC3339), cfg.ClusterID, cfg.OrganizationID)
 	return nil
 }
 
@@ -96,14 +118,55 @@ func run() error {
 	}
 	log.Printf("nomad-agent %s starting (%s), frontend on %s, data in %s", version, mode, cfg.Listen, filepath.Clean(cfg.DataDir))
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var (
+		client *stream.Client
+		exec   *executor.Executor
+	)
+	if cfg.Attached() {
+		public, err := intent.LoadPublicKey(cfg.IntentPublicKeyFile)
+		if err != nil {
+			return fmt.Errorf("intent public key: %w", err)
+		}
+		exec = executor.New(intent.NewVerifier(public, cfg.OrganizationID, cfg.ClusterID), version, cfg.ClusterID)
+		client, err = stream.New(stream.Options{
+			URL:            cfg.StreamURL,
+			CertFile:       cfg.ClientCertFile,
+			KeyFile:        cfg.ClientKeyFile,
+			CAFile:         cfg.StreamCAFile,
+			ClusterID:      cfg.ClusterID,
+			OrganizationID: cfg.OrganizationID,
+			Version:        version,
+			Capabilities:   exec.Capabilities(),
+			Handle:         exec.Handle,
+			Logf:           log.Printf,
+		})
+		if err != nil {
+			return err
+		}
+		go client.Run(ctx)
+	}
+
 	health := func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		body := map[string]any{
 			"status":  "ok",
 			"version": version,
 			"mode":    mode,
 			"uptime":  time.Since(started).Round(time.Second).String(),
-		})
+		}
+		if client != nil {
+			executed, refused := exec.Counts()
+			body["cluster_id"] = cfg.ClusterID
+			body["organization_id"] = cfg.OrganizationID
+			body["stream"] = client.Status()
+			body["capabilities"] = exec.Capabilities()
+			body["intents"] = map[string]uint64{"executed": executed, "refused": refused}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(body)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health)
@@ -115,8 +178,6 @@ func run() error {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {

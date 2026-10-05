@@ -77,3 +77,10 @@ h1 { margin: 0 0 20px; font-size: 22px; }
   nav { flex-direction: row; flex-wrap: wrap; }
   .rail-note { margin-top: 0; }
 }
+.card.stream { grid-column: span 2; }
+.card.stream.connected .value { color: #1a7f37; }
+.card.stream.refused .value, .card.stream.disconnected .value { color: var(--danger); }
+.card.stream.connecting .value { color: var(--fg-soft); }
+.hint.reason { color: var(--danger); }
+.value.small { font-size: 15px; word-break: break-all; }
+@media (max-width: 720px) { .card.stream { grid-column: auto; } }

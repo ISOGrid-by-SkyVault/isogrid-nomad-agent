@@ -19,7 +19,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}"
 
 # 3. Runtime
 FROM alpine:3.20
-RUN addgroup -S nomad && adduser -S -G nomad nomad && mkdir -p /var/lib/nomad-agent && chown nomad:nomad /var/lib/nomad-agent
+# Fixed ids: the installer mounts the key secret readable by this user only.
+RUN addgroup -S -g 10001 nomad && adduser -S -u 10001 -G nomad nomad && mkdir -p /var/lib/nomad-agent && chown nomad:nomad /var/lib/nomad-agent
 COPY --from=build /out/nomad-agent /usr/local/bin/nomad-agent
 USER nomad
 VOLUME ["/var/lib/nomad-agent"]

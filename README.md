@@ -165,10 +165,33 @@ built.
 
 ## Status
 
-Early scaffold. The configuration, the intent envelope, the console shell with
-its overview page, the installer and the CI exist; the stream client, the
-executors, the Vault client, the stores and the console's remaining sections
-are being built in that order.
+Built: the configuration, the intent envelope and its verifier (Ed25519,
+freshness, replay), the stream client (signed handshake, heartbeats,
+reconnection with backoff, refusal reasons shown in the console), the
+executor with `ping` and `capabilities.describe`, the console overview, the
+installer and the CI. Being built, in this order: the Docker executors
+(`service.*`, `build.run`), the Vault client, the SQLite and sample stores,
+and the console's remaining sections.
+
+## Protocol notes
+
+- The stream handshake: the API sends `{"type":"challenge","nonce":...}`; the
+  agent answers `{"type":"hello","cluster_id","certificate","signature",
+  "version","capabilities"}` where `signature` is base64 of a DER ECDSA
+  P-256/SHA-256 signature over the nonce's UTF-8 bytes; the API answers
+  `welcome` with `heartbeat_seconds`. Then `intent` frames come down and
+  `reply` and `heartbeat` frames go up. Close codes: 4000 bad hello, 4003
+  refused (shown as such in the console, retried every two minutes), 4008
+  idle, 4011 platform unavailable.
+- An intent's signature covers the canonical JSON of the envelope without its
+  `signature` member: keys sorted at every level, no whitespace, numbers as
+  written on the wire, strings escaped like Python's `json.dumps(...,
+  ensure_ascii=False)`. The control plane produces it with
+  `json.dumps(fields, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`
+  and signs those bytes with the organization's Ed25519 key.
+- A reply is `{id, kind, cluster_id, status, result?, error?, code?,
+  agent_version, completed_at}` with `status` one of `ok`, `error`,
+  `rejected` (the envelope did not verify; `code` says why) or `unsupported`.
 
 ## Licence
 

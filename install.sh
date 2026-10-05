@@ -191,6 +191,9 @@ install() {
                 chosen+=("$p")
             fi
         done
+        # Remember names, not list positions: the list may be ordered
+        # differently at the next run.
+        SAVED[NETWORKS]="$(IFS=,; echo "${chosen[*]}")"
     else
         note "No overlay networks yet (apart from ingress)."
         SAVED[NETWORKS]=""
@@ -233,7 +236,7 @@ install() {
         docker secret create "$SERVICE-client-key-$stamp" "$A_BUNDLE_DIR/client.key" >/dev/null
         docker config create "$SERVICE-client-cert-$stamp" "$A_BUNDLE_DIR/client.crt" >/dev/null
         docker config create "$SERVICE-intent-pub-$stamp" "$A_BUNDLE_DIR/intent.pub" >/dev/null
-        secret_args+=(--secret "source=$SERVICE-client-key-$stamp,target=client.key,mode=0400")
+        secret_args+=(--secret "source=$SERVICE-client-key-$stamp,target=client.key,uid=10001,gid=10001,mode=0400")
         config_args+=(--config "source=$SERVICE-client-cert-$stamp,target=/etc/nomad-agent/client.crt"
                       --config "source=$SERVICE-intent-pub-$stamp,target=/etc/nomad-agent/intent.pub")
         env_args+=(--env ISOGRID_NOMAD_CLIENT_KEY_FILE=/run/secrets/client.key
@@ -267,11 +270,11 @@ install() {
         if grep -q '^VAULT_ROLE_ID=' "$A_VAULT_AUTH_FILE"; then
             local role_id; role_id="$(sed -n 's/^VAULT_ROLE_ID=//p' "$A_VAULT_AUTH_FILE")"
             sed -n 's/^VAULT_SECRET_ID=//p' "$A_VAULT_AUTH_FILE" | tr -d '\n' | docker secret create "$SERVICE-vault-secret-id-$stamp" - >/dev/null
-            secret_args+=(--secret "source=$SERVICE-vault-secret-id-$stamp,target=vault-secret-id,mode=0400")
+            secret_args+=(--secret "source=$SERVICE-vault-secret-id-$stamp,target=vault-secret-id,uid=10001,gid=10001,mode=0400")
             env_args+=(--env "ISOGRID_NOMAD_VAULT_ROLE_ID=$role_id" --env ISOGRID_NOMAD_VAULT_SECRET_ID_FILE=/run/secrets/vault-secret-id)
         else
             docker secret create "$SERVICE-vault-token-$stamp" "$A_VAULT_AUTH_FILE" >/dev/null
-            secret_args+=(--secret "source=$SERVICE-vault-token-$stamp,target=vault-token,mode=0400")
+            secret_args+=(--secret "source=$SERVICE-vault-token-$stamp,target=vault-token,uid=10001,gid=10001,mode=0400")
             env_args+=(--env ISOGRID_NOMAD_VAULT_TOKEN_FILE=/run/secrets/vault-token)
         fi
     fi

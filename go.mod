@@ -1,7 +1,10 @@
 module github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent
 
-// Standard library only for now, like the node-agent and the CLI in the
-// ISOGrid monorepo. Planned additions, each added with the feature that needs
-// it: a pure-Go SQLite driver (modernc.org/sqlite, no cgo), a WebSocket
-// client for the stream, and a Vault/OpenBao HTTP client (stdlib is enough).
+// Kept small on purpose, like the node-agent and the CLI in the ISOGrid
+// monorepo. Each dependency is added with the feature that needs it: the
+// WebSocket client for the stream (coder/websocket, pure Go, no transitive
+// dependencies); planned next, a pure-Go SQLite driver (modernc.org/sqlite,
+// no cgo). Vault/OpenBao is reached with the standard library.
 go 1.23
+
+require github.com/coder/websocket v1.8.13
