@@ -58,7 +58,7 @@ body {
   gap: 16px;
 }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; }
-.brand-mark { width: 14px; height: 14px; border-radius: 4px; background: var(--accent); }
+.brand-mark { height: 30px; width: auto; display: block; }
 nav { display: flex; flex-direction: column; gap: 2px; }
 nav button {
   text-align: left;

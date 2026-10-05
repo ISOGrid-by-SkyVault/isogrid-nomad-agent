@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 352 416" width="352" height="416" role="img" aria-label="ISOGrid Nomad">
+  <!-- ISOGrid Nomad mark: a Touareg head in a tagelmust, drawn in the ISOGrid colours. -->
+  <g>
+    <g fill="none" stroke="#5F87A6" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+      <!-- tagelmust silhouette: the turban bulges above the brow, the veil hugs the face and falls to the shoulders -->
+      <path d="M60 372 C62 322 74 290 76 240 C77 216 78 198 72 184 C50 170 40 150 44 128 C56 68 112 30 176 30 C240 30 296 68 308 128 C312 150 302 170 280 184 C274 198 275 216 276 240 C278 290 290 322 292 372"/>
+      <!-- the cloth wound around the crown -->
+      <path d="M92 118 C132 86 190 80 242 92"/>
+      <path d="M64 162 C112 130 192 124 270 140"/>
+      <!-- veil folds drawn across nose and mouth -->
+      <path d="M104 272 C130 290 154 298 176 298 C198 298 222 290 248 272"/>
+      <path d="M120 316 C142 330 160 336 176 336 C192 336 210 330 232 316"/>
+    </g>
+    <!-- the eye slit, the only opening the veil leaves -->
+    <path fill="#31414C" d="M88 200 C118 184 146 178 176 178 C206 178 234 184 264 200 C240 228 208 240 176 240 C144 240 112 228 88 200 Z"/>
+    <g fill="#ffffff">
+      <path d="M112 202 C124 192 138 190 152 196 C140 210 124 212 112 202 Z"/>
+      <path d="M240 202 C228 192 214 190 200 196 C212 210 228 212 240 202 Z"/>
+    </g>
+    <g fill="#31414C">
+      <circle cx="134" cy="200" r="6"/>
+      <circle cx="218" cy="200" r="6"/>
+    </g>
+  </g>
+</svg>

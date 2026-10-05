@@ -26,7 +26,7 @@ function sectionFromHash(): SectionId {
 function Brand() {
   return (
     <div className="brand">
-      <span className="brand-mark" aria-hidden="true" />
+      <img className="brand-mark" src="/nomad-logo.svg" alt="" />
       <span>ISOGrid Nomad</span>
     </div>
   );

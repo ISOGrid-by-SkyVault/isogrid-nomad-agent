@@ -1,3 +1,5 @@
+<p align="center"><img src="web/public/nomad-logo.svg" width="360" alt="ISOGrid Nomad: the ISOGrid cloud and shield beside a Touareg head"></p>
+
 # ISOGrid Nomad agent
 
 The ISOGrid Nomad agent is the only piece of [ISOGrid](https://isogrid.skyvault.pro)
