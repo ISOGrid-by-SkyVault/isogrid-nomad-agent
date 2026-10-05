@@ -7,17 +7,24 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/intent"
 )
 
+var intentSeq int
+
+// signed builds a fresh, signed envelope; every call gets its own id, since
+// the verifier executes an id once.
 func signed(t *testing.T, private ed25519.PrivateKey, kind string, payload any) json.RawMessage {
 	t.Helper()
+	intentSeq++
 	doc := map[string]any{
 		"version":         1,
-		"id":              "11111111-2222-3333-4444-" + kind,
+		"id":              fmt.Sprintf("%s-%d", kind, intentSeq),
 		"kind":            kind,
 		"organization_id": "o1",
 		"cluster_id":      "c1",
@@ -41,8 +48,9 @@ func TestHandle(t *testing.T) {
 	e := New(intent.NewVerifier(public, "o1", "c1"), "1.2.3", "c1")
 	e.Register("boom", func(context.Context, *intent.Envelope) (any, error) { return nil, errors.New("docker is down") })
 
-	r := e.Handle(context.Background(), signed(t, private, "ping", map[string]any{"echo": "hey"})).(Reply)
-	if r.Status != "ok" || r.ID != "11111111-2222-3333-4444-ping" || r.ClusterID != "c1" || r.Agent != "1.2.3" {
+	first := signed(t, private, "ping", map[string]any{"echo": "hey"})
+	r := e.Handle(context.Background(), first).(Reply)
+	if r.Status != "ok" || !strings.HasPrefix(r.ID, "ping-") || r.ClusterID != "c1" || r.Agent != "1.2.3" {
 		t.Fatalf("ping: %+v", r)
 	}
 	if r.Result.(map[string]any)["echo"] != "hey" {
@@ -66,8 +74,8 @@ func TestHandle(t *testing.T) {
 	}
 
 	// A replayed ping is refused with its id echoed, and nothing runs.
-	r = e.Handle(context.Background(), signed(t, private, "ping", map[string]any{})).(Reply)
-	if r.Status != "rejected" || r.Code != intent.CodeReplay || r.ID != "11111111-2222-3333-4444-ping" {
+	r = e.Handle(context.Background(), first).(Reply)
+	if r.Status != "rejected" || r.Code != intent.CodeReplay || !strings.HasPrefix(r.ID, "ping-") {
 		t.Fatalf("replay: %+v", r)
 	}
 

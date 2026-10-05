@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/config"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/docker"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/executor"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/intent"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/stream"
@@ -60,9 +61,8 @@ func usage(w *os.File) {
 	fmt.Fprintf(w, "ISOGrid Nomad agent %s\n\nUsage: nomad-agent <command>\n\n  run       start the agent and its operator frontend (default)\n  check     validate the configuration and what it points at\n  version   print the version\n", version)
 }
 
-// check validates the configuration and the identity files, and reports what
-// the agent would use. Reachability checks for Docker and Vault join it with
-// the components that implement them.
+// check validates the configuration, the identity files and the engine, and
+// reports what the agent would use. Vault joins it with its client.
 func check() error {
 	cfg, err := config.FromEnv()
 	if err != nil {
@@ -74,6 +74,16 @@ func check() error {
 	}
 	fmt.Printf("frontend   %s\ndata dir   %s\nmode       %s\ndocker     %s\nvault      %s (mount %s, prefix %s)\n",
 		cfg.Listen, cfg.DataDir, mode, cfg.DockerHost, orNone(cfg.VaultAddr), cfg.VaultMount, cfg.VaultPrefix)
+	if engine, err := docker.New(cfg.DockerHost); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if info, err := engine.Info(ctx); err != nil {
+			fmt.Printf("engine     unreachable: %v\n", err)
+		} else {
+			fmt.Printf("engine     %s %s, swarm %s, manager=%v, %d nodes\n",
+				info.Name, info.ServerVersion, info.Swarm.LocalNodeState, info.Swarm.ControlAvailable, info.Swarm.Nodes)
+		}
+	}
 	if !cfg.Attached() {
 		return nil
 	}
@@ -121,6 +131,10 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	engine, err := docker.New(cfg.DockerHost)
+	if err != nil {
+		return err
+	}
 	var (
 		client *stream.Client
 		exec   *executor.Executor
@@ -131,6 +145,9 @@ func run() error {
 			return fmt.Errorf("intent public key: %w", err)
 		}
 		exec = executor.New(intent.NewVerifier(public, cfg.OrganizationID, cfg.ClusterID), version, cfg.ClusterID)
+		// Secrets by reference wait for the Vault client; until then a deploy
+		// that lists any is refused with a clear message.
+		executor.RegisterServices(exec, engine, cfg.OrganizationID, nil)
 		client, err = stream.New(stream.Options{
 			URL:            cfg.StreamURL,
 			CertFile:       cfg.ClientCertFile,
@@ -155,6 +172,20 @@ func run() error {
 			"version": version,
 			"mode":    mode,
 			"uptime":  time.Since(started).Round(time.Second).String(),
+		}
+		probe, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if info, err := engine.Info(probe); err != nil {
+			body["engine"] = map[string]any{"ok": false, "error": err.Error()}
+		} else {
+			body["engine"] = map[string]any{
+				"ok":      true,
+				"name":    info.Name,
+				"version": info.ServerVersion,
+				"swarm":   info.Swarm.LocalNodeState,
+				"manager": info.Swarm.ControlAvailable,
+				"nodes":   info.Swarm.Nodes,
+			}
 		}
 		if client != nil {
 			executed, refused := exec.Counts()
