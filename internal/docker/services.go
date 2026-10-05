@@ -236,6 +236,24 @@ func (c *Client) ServiceTasks(ctx context.Context, idOrName string) ([]Task, err
 	return out, nil
 }
 
+// OverlayNetworks lists the Swarm-scoped overlay networks, the ingress
+// network excluded: what a service may attach to.
+func (c *Client) OverlayNetworks(ctx context.Context) ([]Network, error) {
+	var out []Network
+	q := filters(map[string][]string{"driver": {"overlay"}, "scope": {"swarm"}})
+	if err := c.do(ctx, http.MethodGet, "/networks", q, nil, &out); err != nil {
+		return nil, err
+	}
+	kept := out[:0]
+	for _, n := range out {
+		if n.Name == "ingress" {
+			continue
+		}
+		kept = append(kept, n)
+	}
+	return kept, nil
+}
+
 // InspectNetwork fetches one network by id or name.
 func (c *Client) InspectNetwork(ctx context.Context, idOrName string) (*Network, error) {
 	var n Network

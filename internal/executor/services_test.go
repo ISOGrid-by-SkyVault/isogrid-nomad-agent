@@ -39,6 +39,12 @@ func (f *fakeSwarm) handler(t *testing.T) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(v)
 		}
 		switch {
+		case path == "/networks":
+			writeJSON(200, []map[string]any{
+				{"Id": "ing", "Name": "ingress", "Scope": "swarm", "Driver": "overlay", "Attachable": false},
+				{"Id": "net1", "Name": "isogrid-nomad", "Scope": "swarm", "Driver": "overlay", "Attachable": true},
+				{"Id": "net3", "Name": "vault_default", "Scope": "swarm", "Driver": "overlay", "Attachable": false},
+			})
 		case path == "/networks/isogrid-nomad":
 			writeJSON(200, map[string]any{"Id": "net1", "Name": "isogrid-nomad", "Scope": "swarm", "Driver": "overlay"})
 		case path == "/networks/bridge-like":
@@ -258,5 +264,17 @@ func TestOnlyManagedServicesAreTouched(t *testing.T) {
 	r = e.Handle(context.Background(), signed(t, private, "service.remove", map[string]any{"name": "acme-api"})).(Reply)
 	if r.Status != "ok" || r.Result.(map[string]any)["removed"] != false {
 		t.Fatalf("second remove: %+v", r)
+	}
+}
+
+func TestInventoryListsOverlayNetworksWithoutIngress(t *testing.T) {
+	e, _, private := setup(t)
+	r := e.Handle(context.Background(), signed(t, private, "networks.list", map[string]any{})).(Reply)
+	if r.Status != "ok" {
+		t.Fatalf("networks.list: %+v", r)
+	}
+	inv := r.Result.(Inventory)
+	if len(inv.Networks) != 2 || inv.Networks[0].Name != "isogrid-nomad" || !inv.Networks[0].Attachable || inv.Networks[1].Name != "vault_default" {
+		t.Fatalf("inventory: %+v", inv)
 	}
 }

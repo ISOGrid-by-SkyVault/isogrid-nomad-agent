@@ -11,8 +11,10 @@ package stream
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,6 +90,10 @@ type Options struct {
 	Capabilities   []string
 	Handle         Handler
 	Logf           func(format string, args ...any)
+	// Inventory reports what the platform should know about the cluster
+	// without asking: today the overlay networks a service may attach to.
+	// It is sent in the hello and again in a heartbeat whenever it changed.
+	Inventory func(ctx context.Context) (any, error)
 }
 
 // Client keeps the channel open for the life of the agent.
@@ -287,6 +293,11 @@ func (c *Client) session(ctx context.Context) error {
 		"version":      c.opt.Version,
 		"capabilities": c.opt.Capabilities,
 	}
+	lastInventory := ""
+	if inv, digest, ok := c.inventory(ctx); ok {
+		hello["inventory"] = inv
+		lastInventory = digest
+	}
 	if err := writeJSON(ctx, conn, hello); err != nil {
 		return fmt.Errorf("hello: %w", err)
 	}
@@ -316,7 +327,7 @@ func (c *Client) session(ctx context.Context) error {
 	sessionCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	errs := make(chan error, 2)
-	go func() { errs <- c.heartbeats(sessionCtx, conn, heartbeat) }()
+	go func() { errs <- c.heartbeats(sessionCtx, conn, heartbeat, lastInventory) }()
 	go func() { errs <- c.read(sessionCtx, conn) }()
 	err = <-errs
 	stop()
@@ -326,7 +337,7 @@ func (c *Client) session(ctx context.Context) error {
 	return err
 }
 
-func (c *Client) heartbeats(ctx context.Context, conn *websocket.Conn, every time.Duration) error {
+func (c *Client) heartbeats(ctx context.Context, conn *websocket.Conn, every time.Duration, lastInventory string) error {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
@@ -334,11 +345,38 @@ func (c *Client) heartbeats(ctx context.Context, conn *websocket.Conn, every tim
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := writeJSON(ctx, conn, map[string]string{"type": "heartbeat"}); err != nil {
+			beat := map[string]any{"type": "heartbeat"}
+			if inv, digest, ok := c.inventory(ctx); ok && digest != lastInventory {
+				beat["inventory"] = inv
+				lastInventory = digest
+			}
+			if err := writeJSON(ctx, conn, beat); err != nil {
 				return fmt.Errorf("heartbeat: %w", err)
 			}
 		}
 	}
+}
+
+// inventory calls the Inventory option and digests its JSON, so a heartbeat
+// only repeats it when something changed. A failing inventory is logged and
+// skipped: the channel matters more than the report.
+func (c *Client) inventory(ctx context.Context) (any, string, bool) {
+	if c.opt.Inventory == nil {
+		return nil, "", false
+	}
+	invCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	inv, err := c.opt.Inventory(invCtx)
+	if err != nil {
+		c.opt.Logf("stream: inventory not read: %v", err)
+		return nil, "", false
+	}
+	data, err := json.Marshal(inv)
+	if err != nil {
+		return nil, "", false
+	}
+	sum := sha256.Sum256(data)
+	return inv, hex.EncodeToString(sum[:8]), true
 }
 
 func (c *Client) read(ctx context.Context, conn *websocket.Conn) error {

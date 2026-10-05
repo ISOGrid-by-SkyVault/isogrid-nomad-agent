@@ -147,8 +147,9 @@ func run() error {
 		exec = executor.New(intent.NewVerifier(public, cfg.OrganizationID, cfg.ClusterID), version, cfg.ClusterID)
 		// Secrets by reference wait for the Vault client; until then a deploy
 		// that lists any is refused with a clear message.
-		executor.RegisterServices(exec, engine, cfg.OrganizationID, nil)
+		services := executor.RegisterServices(exec, engine, cfg.OrganizationID, nil)
 		client, err = stream.New(stream.Options{
+			Inventory:      services.Inventory,
 			URL:            cfg.StreamURL,
 			CertFile:       cfg.ClientCertFile,
 			KeyFile:        cfg.ClientKeyFile,

@@ -160,9 +160,41 @@ type SecretResolver interface {
 	Resolve(ctx context.Context, ref string) (string, error)
 }
 
+// NetworkInfo is one overlay network as reported to the platform.
+type NetworkInfo struct {
+	Name       string `json:"name"`
+	ID         string `json:"id"`
+	Attachable bool   `json:"attachable"`
+}
+
+// Inventory is what the agent tells the platform about the cluster on its
+// own: the overlay networks a service may attach to. Names and ids only.
+type Inventory struct {
+	Networks []NetworkInfo `json:"networks"`
+}
+
+// Inventory reads the overlay networks, sorted by name.
+func (s *ServiceExecutor) Inventory(ctx context.Context) (any, error) {
+	networks, err := s.docker.OverlayNetworks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	inv := Inventory{Networks: make([]NetworkInfo, 0, len(networks))}
+	for _, n := range networks {
+		inv.Networks = append(inv.Networks, NetworkInfo{Name: n.Name, ID: n.ID, Attachable: n.Attachable})
+	}
+	sort.Slice(inv.Networks, func(i, j int) bool { return inv.Networks[i].Name < inv.Networks[j].Name })
+	return inv, nil
+}
+
+func (s *ServiceExecutor) networksList(ctx context.Context, _ *intent.Envelope) (any, error) {
+	return s.Inventory(ctx)
+}
+
 // RegisterServices adds the service.* handlers to an executor.
 func RegisterServices(e *Executor, client *docker.Client, organizationID string, secrets SecretResolver) *ServiceExecutor {
 	s := &ServiceExecutor{docker: client, orgID: organizationID, secrets: secrets}
+	e.Register("networks.list", s.networksList)
 	e.Register("service.deploy", s.deploy)
 	e.Register("service.status", s.status)
 	e.Register("service.scale", s.scale)
