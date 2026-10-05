@@ -165,13 +165,39 @@ built.
 
 ## Status
 
-Built: the configuration, the intent envelope and its verifier (Ed25519,
-freshness, replay), the stream client (signed handshake, heartbeats,
-reconnection with backoff, refusal reasons shown in the console), the
-executor with `ping` and `capabilities.describe`, the console overview, the
-installer and the CI. Being built, in this order: the Docker executors
-(`service.*`, `build.run`), the Vault client, the SQLite and sample stores,
-and the console's remaining sections.
+Built:
+
+- the stream client (signed handshake, heartbeats, reconnection with backoff,
+  the cluster's overlay networks reported to ISOGrid);
+- the intent verifier (Ed25519, scope, freshness) and a durable journal, so an
+  intent id is executed at most once across restarts;
+- the executors: `ping`, `capabilities.describe`, `networks.list` and
+  `service.deploy|status|scale|remove|rollback` on Docker Swarm, with secrets
+  resolved by reference from Vault at deploy time;
+- the Vault/OpenBao client (AppRole or token file, KV v2 below one prefix);
+- the local store (SQLite, pure Go) and the performance sampler;
+- the console: a local operator account created with a setup token from the
+  agent's log, Argon2id passwords, optional TOTP, and the Overview,
+  Deployments, Secrets, Logs, Performance, Activity and Settings sections.
+
+Next: connections to GitHub, GitLab and container registries held on the
+agent side, `build.run`, an approval step for deploys an operator wants to
+review, a log store with its own retention (logs are read from the engine
+today), and the Kubernetes executor.
+
+## The console
+
+Open it on the address the installer printed. The first visit asks for the
+setup token:
+
+```sh
+docker service logs isogrid-nomad-agent 2>&1 | grep "setup token"
+```
+
+Sessions last twelve hours. Sign-in is slowed down after five failures.
+Secret values are write-only: the console lists references and never shows a
+value again. Put your own reverse proxy and identity provider in front of it
+for anything beyond the break-glass account.
 
 ## Protocol notes
 

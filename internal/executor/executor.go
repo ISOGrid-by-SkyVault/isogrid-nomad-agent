@@ -43,9 +43,37 @@ type Executor struct {
 
 	mu       sync.RWMutex
 	handlers map[string]Handler
+	journal  Journal
 	started  time.Time
 	executed uint64
 	refused  uint64
+}
+
+// Journal is the durable record of what the agent was asked. It makes "an
+// intent id is executed at most once" survive a restart, and it is what the
+// console shows as activity. Entries carry no payload and no result.
+type Journal interface {
+	Seen(ctx context.Context, id string) (bool, error)
+	Record(ctx context.Context, entry JournalEntry)
+}
+
+// JournalEntry is one line of the journal.
+type JournalEntry struct {
+	ID         string
+	Kind       string
+	Status     string
+	Subject    string
+	Error      string
+	ReceivedAt time.Time
+	Duration   time.Duration
+}
+
+// SetJournal attaches the journal; without one the executor only keeps the
+// verifier's in-memory replay set.
+func (e *Executor) SetJournal(j Journal) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.journal = j
 }
 
 // New builds an executor with the handlers every agent has: ping and
@@ -92,8 +120,41 @@ func (e *Executor) Counts() (executed, refused uint64) {
 
 // Handle is the stream's handler: verify, dispatch, and always answer.
 func (e *Executor) Handle(ctx context.Context, body json.RawMessage) any {
+	received := time.Now()
+	reply := e.handle(ctx, body)
+	e.mu.RLock()
+	journal := e.journal
+	e.mu.RUnlock()
+	if journal != nil {
+		entry := JournalEntry{
+			ID: reply.ID, Kind: reply.Kind, Status: reply.Status, Error: reply.Error,
+			Subject: subjectOf(body), ReceivedAt: received, Duration: time.Since(received),
+		}
+		if reply.Status == "rejected" {
+			// A refused envelope must not occupy the id of a genuine one.
+			entry.ID = fmt.Sprintf("refused-%d-%s", received.UnixNano(), reply.ID)
+			entry.Subject = ""
+		}
+		journal.Record(ctx, entry)
+	}
+	return reply
+}
+
+func (e *Executor) handle(ctx context.Context, body json.RawMessage) Reply {
 	reply := Reply{ClusterID: e.clusterID, Agent: e.version}
 	env, err := e.verifier.Verify(body)
+	if err == nil {
+		e.mu.RLock()
+		journal := e.journal
+		e.mu.RUnlock()
+		if journal != nil {
+			if seen, jerr := journal.Seen(ctx, env.ID); jerr != nil {
+				err = &intent.Error{Code: intent.CodeReplay, Message: "the journal could not be read, so the intent is not executed: " + jerr.Error()}
+			} else if seen {
+				err = &intent.Error{Code: intent.CodeReplay, Message: "intent " + env.ID + " was already executed"}
+			}
+		}
+	}
 	if err != nil {
 		var ie *intent.Error
 		if errors.As(err, &ie) {
@@ -143,6 +204,21 @@ func (e *Executor) count(executed bool) {
 	} else {
 		e.refused++
 	}
+}
+
+// subjectOf names what an intent is about, for the journal: the service
+// name when the payload has one. Nothing else of the payload is kept.
+func subjectOf(body json.RawMessage) string {
+	var probe struct {
+		Payload struct {
+			Name string `json:"name"`
+		} `json:"payload"`
+	}
+	_ = json.Unmarshal(body, &probe)
+	if len(probe.Payload.Name) > 64 {
+		return probe.Payload.Name[:64]
+	}
+	return probe.Payload.Name
 }
 
 // unverifiedIdentity pulls id and kind out of an envelope that failed

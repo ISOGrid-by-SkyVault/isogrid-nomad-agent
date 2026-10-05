@@ -193,7 +193,7 @@ func (s *ServiceExecutor) networksList(ctx context.Context, _ *intent.Envelope) 
 
 // RegisterServices adds the service.* handlers to an executor.
 func RegisterServices(e *Executor, client *docker.Client, organizationID string, secrets SecretResolver) *ServiceExecutor {
-	s := &ServiceExecutor{docker: client, orgID: organizationID, secrets: secrets}
+	s := NewServiceExecutor(client, organizationID, secrets)
 	e.Register("networks.list", s.networksList)
 	e.Register("service.deploy", s.deploy)
 	e.Register("service.status", s.status)

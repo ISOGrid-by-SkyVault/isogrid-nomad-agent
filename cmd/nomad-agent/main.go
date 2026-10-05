@@ -11,7 +11,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -23,10 +22,14 @@ import (
 	"time"
 
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/config"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/console"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/docker"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/executor"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/intent"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/metrics"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/store"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/stream"
+	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/internal/vault"
 	"github.com/ISOGrid-by-SkyVault/isogrid-nomad-agent/web"
 )
 
@@ -113,6 +116,28 @@ func orNone(s string) string {
 	return s
 }
 
+// journal adapts the store to the executor's journal.
+type journal struct {
+	store *store.Store
+}
+
+func (j journal) Seen(ctx context.Context, id string) (bool, error) {
+	return j.store.IntentSeen(ctx, id)
+}
+
+func (j journal) Record(ctx context.Context, e executor.JournalEntry) {
+	// The request may be gone by the time the line is written.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	err := j.store.RecordIntent(ctx, store.IntentRecord{
+		ID: e.ID, Kind: e.Kind, Status: e.Status, Subject: e.Subject, Error: e.Error,
+		ReceivedAt: e.ReceivedAt, DurationMS: e.Duration.Milliseconds(),
+	})
+	if err != nil {
+		log.Printf("journal: %v", err)
+	}
+}
+
 func run() error {
 	cfg, err := config.FromEnv()
 	if err != nil {
@@ -131,13 +156,40 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	db, err := store.Open(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("local store in %s: %w", cfg.DataDir, err)
+	}
+	defer db.Close()
+	if err := db.Prune(ctx, cfg.SampleRetention); err != nil {
+		log.Printf("store: prune failed: %v", err)
+	}
+
 	engine, err := docker.New(cfg.DockerHost)
 	if err != nil {
 		return err
 	}
+
+	// The customer's Vault, when one is configured. A Vault that is sealed
+	// or down does not keep the agent from starting; it shows in the console.
+	var secrets *vault.Client
+	var resolver executor.SecretResolver
+	if cfg.VaultAddr != "" {
+		secrets, err = vault.New(vault.Options{
+			Addr: cfg.VaultAddr, CACertFile: cfg.VaultCACertFile, TokenFile: cfg.VaultTokenFile,
+			RoleID: cfg.VaultRoleID, SecretIDFile: cfg.VaultSecretIDFile,
+			Mount: cfg.VaultMount, Prefix: cfg.VaultPrefix,
+		})
+		if err != nil {
+			return err
+		}
+		resolver = secrets
+	}
+
 	var (
-		client *stream.Client
-		exec   *executor.Executor
+		client   *stream.Client
+		exec     *executor.Executor
+		services *executor.ServiceExecutor
 	)
 	if cfg.Attached() {
 		public, err := intent.LoadPublicKey(cfg.IntentPublicKeyFile)
@@ -145,9 +197,8 @@ func run() error {
 			return fmt.Errorf("intent public key: %w", err)
 		}
 		exec = executor.New(intent.NewVerifier(public, cfg.OrganizationID, cfg.ClusterID), version, cfg.ClusterID)
-		// Secrets by reference wait for the Vault client; until then a deploy
-		// that lists any is refused with a clear message.
-		services := executor.RegisterServices(exec, engine, cfg.OrganizationID, nil)
+		exec.SetJournal(journal{db})
+		services = executor.RegisterServices(exec, engine, cfg.OrganizationID, resolver)
 		client, err = stream.New(stream.Options{
 			Inventory:      services.Inventory,
 			URL:            cfg.StreamURL,
@@ -165,49 +216,30 @@ func run() error {
 			return err
 		}
 		go client.Run(ctx)
+	} else {
+		services = executor.NewServiceExecutor(engine, cfg.OrganizationID, resolver)
 	}
 
-	health := func(w http.ResponseWriter, r *http.Request) {
-		body := map[string]any{
-			"status":  "ok",
-			"version": version,
-			"mode":    mode,
-			"uptime":  time.Since(started).Round(time.Second).String(),
-		}
-		probe, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-		defer cancel()
-		if info, err := engine.Info(probe); err != nil {
-			body["engine"] = map[string]any{"ok": false, "error": err.Error()}
-		} else {
-			body["engine"] = map[string]any{
-				"ok":      true,
-				"name":    info.Name,
-				"version": info.ServerVersion,
-				"swarm":   info.Swarm.LocalNodeState,
-				"manager": info.Swarm.ControlAvailable,
-				"nodes":   info.Swarm.Nodes,
-			}
-		}
-		if client != nil {
-			executed, refused := exec.Counts()
-			body["cluster_id"] = cfg.ClusterID
-			body["organization_id"] = cfg.OrganizationID
-			body["stream"] = client.Status()
-			body["capabilities"] = exec.Capabilities()
-			body["intents"] = map[string]uint64{"executed": executed, "refused": refused}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(body)
+	sampler := &metrics.Sampler{
+		Docker: engine, Store: db, Label: executor.ManagedLabel + "=true",
+		Interval: cfg.SampleInterval, Retention: cfg.SampleRetention, Logf: log.Printf,
+	}
+	go sampler.Run(ctx)
+
+	api := &console.Server{
+		Version: version, Started: started, Config: cfg, Store: db, Docker: engine,
+		Services: services, Vault: secrets, Stream: client, Executor: exec, Logf: log.Printf,
+	}
+	if err := api.Init(ctx); err != nil {
+		return fmt.Errorf("console: %w", err)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", health)
-	mux.HandleFunc("GET /api/healthz", health)
+	api.Routes(mux)
 	mux.Handle("/", web.Handler())
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           mux,
+		Handler:           console.Harden(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

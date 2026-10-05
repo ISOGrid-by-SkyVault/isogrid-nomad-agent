@@ -314,6 +314,10 @@ install() {
         say "The agent is running."
         note "Console:  http://$(primary_addr):$A_CONSOLE_PORT/"
         note "Health:   curl -s http://127.0.0.1:$A_CONSOLE_PORT/api/healthz"
+        local token; token="$(docker service logs "$SERVICE" 2>&1 | grep -o 'setup token: [A-Z2-7]*' | tail -1 || true)"
+        if [ -n "$token" ]; then
+            note "Account:  the console has no operator yet. Create one there with this $token"
+        fi
         note "Logs:     docker service logs -f $SERVICE"
         note "Answers:  $ANSWERS (re-run the installer to change anything)"
     else

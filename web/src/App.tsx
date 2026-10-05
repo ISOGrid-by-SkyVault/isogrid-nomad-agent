@@ -1,173 +1,191 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { ApiError, get, post, type Session } from "./api";
+import { ActivityPage, DeploymentsPage, LogsPage, OverviewPage, PerformancePage, SecretsPage, SettingsPage } from "./pages";
 
-type StreamStatus = {
-  state: "connecting" | "connected" | "refused" | "disconnected";
-  since: string;
-  reason?: string;
-  attempts: number;
-  next_attempt_at?: string;
-  heartbeat_seconds?: number;
-  intents_received: number;
-  replies_sent: number;
-  last_intent_at?: string;
-  certificate_cn?: string;
-  certificate_not_after: string;
-};
-
-type Health = {
-  status: string;
-  version: string;
-  mode: "attached" | "detached";
-  uptime: string;
-  cluster_id?: string;
-  organization_id?: string;
-  stream?: StreamStatus;
-  capabilities?: string[];
-  intents?: { executed: number; refused: number };
-};
-
-// The sections the operator frontend will have. Each one is served by the
-// agent itself and reads only local state: nothing here reaches ISOGrid.
+// Each section is served by the agent itself and reads only local state:
+// the engine, the agent's own store, your Vault. Nothing here reaches ISOGrid.
 const SECTIONS = [
-  { id: "overview", label: "Overview", ready: true },
-  { id: "deployments", label: "Deployments", ready: false },
-  { id: "secrets", label: "Secrets", ready: false },
-  { id: "logs", label: "Logs", ready: false },
-  { id: "metrics", label: "Performance", ready: false },
-  { id: "approvals", label: "Approvals", ready: false },
-  { id: "settings", label: "Settings", ready: false },
+  { id: "overview", label: "Overview" },
+  { id: "deployments", label: "Deployments" },
+  { id: "secrets", label: "Secrets" },
+  { id: "logs", label: "Logs" },
+  { id: "performance", label: "Performance" },
+  { id: "activity", label: "Activity" },
+  { id: "settings", label: "Settings" },
 ] as const;
+type SectionId = (typeof SECTIONS)[number]["id"];
 
-const STREAM_WORDS: Record<StreamStatus["state"], string> = {
-  connecting: "Connecting to ISOGrid.",
-  connected: "Connected to ISOGrid. Intents arrive on this channel, replies and heartbeats go back on it.",
-  refused: "ISOGrid refused the connection. Fix the cause, the agent keeps retrying.",
-  disconnected: "The channel dropped. The agent reconnects by itself.",
-};
+function sectionFromHash(): SectionId {
+  const id = window.location.hash.replace("#", "");
+  return (SECTIONS.find((s) => s.id === id)?.id ?? "overview") as SectionId;
+}
 
-function when(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+function Brand() {
+  return (
+    <div className="brand">
+      <span className="brand-mark" aria-hidden="true" />
+      <span>ISOGrid Nomad</span>
+    </div>
+  );
+}
+
+function Gate({ session, onDone }: { session: Session; onDone: () => void }) {
+  const setup = session.setup_required;
+  const [token, setToken] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [needCode, setNeedCode] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      if (setup) await post("/api/setup", { token, username, password });
+      else await post("/api/login", { username, password, code });
+      onDone();
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "totp_required") setNeedCode(true);
+      else setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="gate">
+      <form className="panel form gate-card" onSubmit={submit}>
+        <Brand />
+        <h1>{setup ? "Create the operator account" : "Sign in"}</h1>
+        {setup && (
+          <>
+            <p className="hint">
+              This console has no account yet. The agent printed a setup token in its log so that reaching this page is not enough to claim it:
+            </p>
+            <code className="secret-key">docker service logs isogrid-nomad-agent 2&gt;&amp;1 | grep "setup token"</code>
+            <label>
+              Setup token
+              <input value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" spellCheck={false} required />
+            </label>
+          </>
+        )}
+        <label>
+          Username
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false} required />
+        </label>
+        <label>
+          Password
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete={setup ? "new-password" : "current-password"}
+            minLength={setup ? 12 : undefined}
+            required
+          />
+        </label>
+        {setup && <span className="hint">At least 12 characters. You can add a second factor in Settings afterwards.</span>}
+        {needCode && (
+          <label>
+            Code from your authenticator app
+            <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" autoFocus required />
+          </label>
+        )}
+        {error && <p className="note bad">{error}</p>}
+        <div className="actions">
+          <button className="primary" disabled={busy}>
+            {busy ? "One moment…" : setup ? "Create the account" : "Sign in"}
+          </button>
+        </div>
+        <p className="rail-note">This console is served by the agent on your network. ISOGrid cannot reach it.</p>
+      </form>
+    </div>
+  );
 }
 
 export function App() {
-  const [health, setHealth] = useState<Health | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [section, setSection] = useState<(typeof SECTIONS)[number]["id"]>("overview");
+  const [section, setSection] = useState<SectionId>(sectionFromHash);
+  const [logService, setLogService] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = () =>
-      fetch("/api/healthz")
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-        .then((h: Health) => {
-          if (!cancelled) {
-            setHealth(h);
-            setError(null);
-          }
-        })
-        .catch((e: Error) => {
-          if (!cancelled) setError(e.message);
-        });
-    load();
-    const timer = setInterval(load, 5_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
+  const loadSession = useCallback(() => {
+    get<Session>("/api/session")
+      .then((s) => {
+        setSession(s);
+        setError(null);
+      })
+      .catch((e: Error) => setError(e.message));
   }, []);
 
-  const stream = health?.stream;
+  useEffect(() => {
+    loadSession();
+    // A session that expired while the page was open sends the operator back
+    // to the sign-in form instead of leaving every panel in error.
+    const timer = setInterval(loadSession, 60_000);
+    const onHash = () => setSection(sectionFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("hashchange", onHash);
+    };
+  }, [loadSession]);
+
+  const go = (id: SectionId) => {
+    window.location.hash = id;
+    setSection(id);
+  };
+
+  if (!session) {
+    return <div className="gate">{error ? <div className="card error">The agent did not answer: {error}</div> : <p className="hint">Loading…</p>}</div>;
+  }
+  if (!session.authenticated) {
+    return <Gate session={session} onDone={loadSession} />;
+  }
 
   return (
     <div className="shell">
       <aside className="rail">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true" />
-          <span>ISOGrid Nomad</span>
-        </div>
-        <nav>
+        <Brand />
+        <nav aria-label="Sections">
           {SECTIONS.map((s) => (
-            <button
-              key={s.id}
-              className={s.id === section ? "active" : ""}
-              disabled={!s.ready}
-              onClick={() => setSection(s.id)}
-              title={s.ready ? undefined : "Not built yet"}
-            >
-              <span>{s.label}</span>
-              {!s.ready && <span className="soon">soon</span>}
+            <button key={s.id} className={s.id === section ? "active" : ""} aria-current={s.id === section ? "page" : undefined} onClick={() => go(s.id)}>
+              {s.label}
             </button>
           ))}
         </nav>
-        <p className="rail-note">This console is served by the agent on your network. ISOGrid cannot reach it.</p>
+        <div className="rail-foot">
+          <span className="hint">
+            Signed in as <strong>{session.username}</strong>
+          </span>
+          <button
+            onClick={() => {
+              void post("/api/logout").finally(loadSession);
+            }}
+          >
+            Sign out
+          </button>
+          <p className="rail-note">This console is served by the agent on your network. ISOGrid cannot reach it.</p>
+        </div>
       </aside>
       <main>
-        <h1>Overview</h1>
-        {error && <div className="card error">The agent did not answer: {error}</div>}
-        {health && (
-          <div className="cards">
-            <div className="card">
-              <span className="label">Status</span>
-              <span className="value">{health.status}</span>
-            </div>
-            <div className="card">
-              <span className="label">Mode</span>
-              <span className="value">{health.mode}</span>
-              <span className="hint">
-                {health.mode === "attached"
-                  ? "An outbound WebSocket to the ISOGrid API, authenticated with the cluster's certificate."
-                  : "No stream configured: the agent only serves this console."}
-              </span>
-            </div>
-            <div className="card">
-              <span className="label">Version</span>
-              <span className="value">{health.version}</span>
-            </div>
-            <div className="card">
-              <span className="label">Uptime</span>
-              <span className="value">{health.uptime}</span>
-            </div>
-            {stream && (
-              <>
-                <div className={`card stream ${stream.state}`}>
-                  <span className="label">ISOGrid channel</span>
-                  <span className="value">{stream.state}</span>
-                  <span className="hint">{STREAM_WORDS[stream.state]}</span>
-                  {stream.reason && <span className="hint reason">{stream.reason}</span>}
-                  <span className="hint">
-                    Since {when(stream.since)}
-                    {stream.next_attempt_at ? ` · next attempt ${when(stream.next_attempt_at)}` : ""}
-                    {stream.heartbeat_seconds ? ` · heartbeat every ${stream.heartbeat_seconds}s` : ""}
-                    {` · attempt ${stream.attempts}`}
-                  </span>
-                </div>
-                <div className="card">
-                  <span className="label">Identity</span>
-                  <span className="value small">{stream.certificate_cn}</span>
-                  <span className="hint">
-                    Certificate valid until {when(stream.certificate_not_after)}.
-                    {health.organization_id ? ` Organization ${health.organization_id}.` : ""}
-                  </span>
-                </div>
-                <div className="card">
-                  <span className="label">Intents</span>
-                  <span className="value">
-                    {stream.intents_received} received · {stream.replies_sent} answered
-                  </span>
-                  <span className="hint">
-                    {health.intents ? `${health.intents.executed} executed, ${health.intents.refused} refused.` : ""}
-                    {stream.last_intent_at ? ` Last one ${when(stream.last_intent_at)}.` : " None yet."}
-                  </span>
-                  {health.capabilities && (
-                    <span className="hint">This agent executes: {health.capabilities.join(", ")}.</span>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
+        {section === "overview" && <OverviewPage />}
+        {section === "deployments" && (
+          <DeploymentsPage
+            openLogs={(name) => {
+              setLogService(name);
+              go("logs");
+            }}
+          />
         )}
+        {section === "secrets" && <SecretsPage />}
+        {section === "logs" && <LogsPage service={logService} setService={setLogService} />}
+        {section === "performance" && <PerformancePage />}
+        {section === "activity" && <ActivityPage />}
+        {section === "settings" && <SettingsPage onAccountChange={loadSession} />}
       </main>
     </div>
   );
