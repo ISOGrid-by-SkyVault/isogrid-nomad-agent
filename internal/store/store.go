@@ -249,7 +249,7 @@ func (s *Store) RecordIntent(ctx context.Context, r IntentRecord) error {
 func (s *Store) ListIntents(ctx context.Context, limit int, includeReads bool) ([]IntentRecord, error) {
 	query := `SELECT id, kind, status, subject, error, received_at, duration_ms FROM intents`
 	if !includeReads {
-		query += ` WHERE kind NOT IN ('service.status', 'ping', 'networks.list', 'capabilities.describe')`
+		query += ` WHERE kind NOT IN ('service.status', 'build.status', 'ping', 'networks.list', 'capabilities.describe', 'repositories.list', 'repository.refs', 'repository.commits', 'registry.images')`
 	}
 	query += ` ORDER BY received_at DESC, id LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, query, limit)
@@ -361,7 +361,7 @@ func (s *Store) Prune(ctx context.Context, sampleRetention time.Duration) error 
 	}{
 		{`DELETE FROM sessions WHERE expires_at <= ?`, now.Unix()},
 		{`DELETE FROM samples WHERE ts < ?`, now.Add(-sampleRetention).Unix()},
-		{`DELETE FROM intents WHERE kind IN ('service.status', 'ping', 'networks.list', 'capabilities.describe') AND received_at < ?`, now.Add(-24 * time.Hour).Unix()},
+		{`DELETE FROM intents WHERE kind IN ('service.status', 'build.status', 'ping', 'networks.list', 'capabilities.describe', 'repositories.list', 'repository.refs', 'repository.commits', 'registry.images') AND received_at < ?`, now.Add(-24 * time.Hour).Unix()},
 		{`DELETE FROM intents WHERE received_at < ?`, now.Add(-90 * 24 * time.Hour).Unix()},
 	}
 	for _, step := range steps {
