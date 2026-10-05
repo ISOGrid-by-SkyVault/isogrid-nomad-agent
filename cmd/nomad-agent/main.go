@@ -58,16 +58,16 @@ func usage(w *os.File) {
 }
 
 // check validates the configuration and reports what the agent would use.
-// Reachability checks for Docker, Vault and the broker join it with the
+// Reachability checks for Docker, Vault and the stream join it with the
 // components that implement them.
 func check() error {
 	cfg, err := config.FromEnv()
 	if err != nil {
 		return err
 	}
-	mode := "detached (no broker configured)"
+	mode := "detached (no stream configured)"
 	if cfg.Attached() {
-		mode = "attached to " + cfg.BrokerURL + " vhost " + cfg.BrokerVhost
+		mode = "attached to " + cfg.StreamURL
 	}
 	fmt.Printf("frontend   %s\ndata dir   %s\nmode       %s\ndocker     %s\nvault      %s (mount %s, prefix %s)\n",
 		cfg.Listen, cfg.DataDir, mode, cfg.DockerHost, orNone(cfg.VaultAddr), cfg.VaultMount, cfg.VaultPrefix)

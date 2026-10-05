@@ -11,8 +11,9 @@
 #   - whether to initialise Swarm when this machine is not in one yet,
 #   - which overlay networks the agent should join,
 #   - where the operator console listens and which addresses may reach it,
-#   - where the bundle received from ISOGrid is (broker certificate, CA,
-#     intent-signing key, identifiers); without it the agent runs detached,
+#   - where the bundle received from ISOGrid is (the cluster's certificate and
+#     key, the intent-signing key, identifiers); without it the agent runs
+#     detached,
 #   - how to reach Vault or OpenBao (address, CA, AppRole or token file).
 #
 # Answers are saved in /etc/isogrid-nomad/install.env and offered as defaults
@@ -215,32 +216,35 @@ install() {
 
     # 6. ISOGrid bundle
     say "ISOGrid connection"
-    note "ISOGrid gives you a bundle when you add the Nomad integration: agent.env, client.crt, client.key, ca.crt, intent.pub."
+    note "ISOGrid gives you a bundle when you add the Nomad integration: agent.env, client.crt, client.key, intent.pub."
     ask BUNDLE_DIR "Directory holding that bundle (empty to run detached, console only)" "$( [ -d "$STATE_DIR/bundle" ] && echo "$STATE_DIR/bundle" )"
     local -a env_args=() secret_args=() config_args=()
     local stamp; stamp="$(date +%Y%m%d%H%M%S)"
     if [ -n "$A_BUNDLE_DIR" ]; then
-        for f in agent.env client.crt client.key ca.crt intent.pub; do
+        for f in agent.env client.crt client.key intent.pub; do
             [ -f "$A_BUNDLE_DIR/$f" ] || die "missing $A_BUNDLE_DIR/$f"
         done
         local k v
         while IFS='=' read -r k v; do
             case "$k" in
-                BROKER_URL|BROKER_VHOST|CLUSTER_ID|ORGANIZATION_ID) env_args+=(--env "ISOGRID_NOMAD_$k=$v") ;;
+                STREAM_URL|CLUSTER_ID|ORGANIZATION_ID) env_args+=(--env "ISOGRID_NOMAD_$k=$v") ;;
             esac
         done < "$A_BUNDLE_DIR/agent.env"
-        docker secret create "$SERVICE-broker-key-$stamp" "$A_BUNDLE_DIR/client.key" >/dev/null
-        docker config create "$SERVICE-broker-cert-$stamp" "$A_BUNDLE_DIR/client.crt" >/dev/null
-        docker config create "$SERVICE-broker-ca-$stamp" "$A_BUNDLE_DIR/ca.crt" >/dev/null
+        docker secret create "$SERVICE-client-key-$stamp" "$A_BUNDLE_DIR/client.key" >/dev/null
+        docker config create "$SERVICE-client-cert-$stamp" "$A_BUNDLE_DIR/client.crt" >/dev/null
         docker config create "$SERVICE-intent-pub-$stamp" "$A_BUNDLE_DIR/intent.pub" >/dev/null
-        secret_args+=(--secret "source=$SERVICE-broker-key-$stamp,target=broker.key,mode=0400")
-        config_args+=(--config "source=$SERVICE-broker-cert-$stamp,target=/etc/nomad-agent/broker.crt"
-                      --config "source=$SERVICE-broker-ca-$stamp,target=/etc/nomad-agent/broker-ca.crt"
+        secret_args+=(--secret "source=$SERVICE-client-key-$stamp,target=client.key,mode=0400")
+        config_args+=(--config "source=$SERVICE-client-cert-$stamp,target=/etc/nomad-agent/client.crt"
                       --config "source=$SERVICE-intent-pub-$stamp,target=/etc/nomad-agent/intent.pub")
-        env_args+=(--env ISOGRID_NOMAD_BROKER_KEY_FILE=/run/secrets/broker.key
-                   --env ISOGRID_NOMAD_BROKER_CERT_FILE=/etc/nomad-agent/broker.crt
-                   --env ISOGRID_NOMAD_BROKER_CA_FILE=/etc/nomad-agent/broker-ca.crt
+        env_args+=(--env ISOGRID_NOMAD_CLIENT_KEY_FILE=/run/secrets/client.key
+                   --env ISOGRID_NOMAD_CLIENT_CERT_FILE=/etc/nomad-agent/client.crt
                    --env ISOGRID_NOMAD_INTENT_PUBLIC_KEY_FILE=/etc/nomad-agent/intent.pub)
+        # A lab whose API sits behind a self-signed edge ships its CA as ca.crt.
+        if [ -f "$A_BUNDLE_DIR/ca.crt" ]; then
+            docker config create "$SERVICE-stream-ca-$stamp" "$A_BUNDLE_DIR/ca.crt" >/dev/null
+            config_args+=(--config "source=$SERVICE-stream-ca-$stamp,target=/etc/nomad-agent/stream-ca.crt")
+            env_args+=(--env ISOGRID_NOMAD_STREAM_CA_FILE=/etc/nomad-agent/stream-ca.crt)
+        fi
     else
         note "No bundle: the agent starts detached and only serves the console."
     fi

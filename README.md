@@ -11,9 +11,10 @@ before they run it.
 
 ## What the agent never does
 
-- It never opens a port for ISOGrid. Every connection is outbound, from the
-  agent to the ISOGrid broker. Queries from ISOGrid (list repositories, list
-  branches, list images) are answered over that same outbound channel.
+- It never opens a port for ISOGrid. The agent opens one outbound WebSocket
+  to the ISOGrid API over HTTPS, and everything travels on it: intents down,
+  replies and heartbeats up. Queries from ISOGrid (list repositories, list
+  branches, list images) are answered over that same channel.
 - It never accepts a shell command. The control plane sends typed, signed
   *intents* (see [`intents/schema.json`](intents/schema.json)); the agent only
   executes the intents it recognises, with the parameters they declare.
@@ -33,9 +34,9 @@ before they run it.
 ```
  customer network                                     ISOGrid
  ┌──────────────────────────────────────────┐        ┌────────────────────┐
- │  nomad-agent (one per cluster)           │  mTLS  │  RabbitMQ broker   │
- │   ├─ broker client  ───────────────────────────►  │  vhost per org     │◄── control plane
- │   ├─ intent verifier (Ed25519, nonce)    │ AMQPS  │  queue per cluster │    signs intents
+ │  nomad-agent (one per cluster)           │  wss   │  API (edge, 443)   │
+ │   ├─ stream client  ───────────────────────────►  │  relay per agent   │◄── control plane
+ │   ├─ intent verifier (Ed25519, nonce)    │ HTTPS  │  queue per cluster │    signs intents
  │   ├─ executor: Docker Engine API (socket)│        └────────────────────┘
  │   │            or Kubernetes API         │
  │   ├─ Vault/OpenBao client (AppRole)      │
@@ -52,13 +53,17 @@ before they run it.
 - **One agent per cluster, scoped to one organization.** The organization is
   the tenancy boundary on the ISOGrid side (its own broker vhost). The cluster
   is the execution unit: its own client certificate, its own queue.
-- **Outbound only.** The agent connects to the broker with mutual TLS. ISOGrid
-  also restricts the broker to the customer's declared source addresses, but
-  the certificate is the authentication; the allow-list is a second layer.
+- **Outbound only, over HTTPS.** The agent opens a WebSocket to the ISOGrid
+  API through the same edge and certificate as the console: no broker and no
+  extra port face the internet. The API sends a nonce; the agent answers with
+  the certificate ISOGrid issued for the cluster and the nonce signed with its
+  key. ISOGrid also admits the connection only from the customer's declared
+  source addresses; the certificate is the authentication, the allow-list a
+  second layer.
 - **Signed intents.** Each intent is signed with a per-organization key held in
   ISOGrid's own vault, carries a nonce and an expiry, and is executed at most
-  once (the id is recorded in SQLite). A compromised broker cannot forge or
-  replay an intent.
+  once (the id is recorded in SQLite). Nothing on the path can forge or replay
+  an intent.
 - **Guard rails on what can run.** Deploy intents that ask for privileged
   containers, host networking, the Docker socket or bind mounts outside an
   allowed root are refused unless an operator approves them in the console.
@@ -106,9 +111,9 @@ What it does:
 3. Asks where the operator console should listen and which addresses may
    reach it, and restricts the port in the `DOCKER-USER` chain accordingly.
 4. Asks for the bundle ISOGrid gave you when you added the integration
-   (`agent.env`, `client.crt`, `client.key`, `ca.crt`, `intent.pub`). The key
-   becomes a Docker secret and the certificates Docker configs. Without a
-   bundle the agent runs detached and only serves its console.
+   (`agent.env`, `client.crt`, `client.key`, `intent.pub`). The key becomes a
+   Docker secret and the certificate and signing key Docker configs. Without
+   a bundle the agent runs detached and only serves its console.
 5. Asks how to reach Vault or OpenBao: address, private CA if any, and either
    an AppRole file (`VAULT_ROLE_ID`, `VAULT_SECRET_ID`) or a token file. The
    secret id or token becomes a Docker secret.
@@ -128,14 +133,15 @@ installer.
 
 All settings are environment variables prefixed `ISOGRID_NOMAD_`. See
 [`internal/config/config.go`](internal/config/config.go) for the full list and
-defaults. Without a broker URL the agent runs detached: console only.
+defaults. Without a stream URL the agent runs detached: console only.
 
 | Variable | Meaning |
 | --- | --- |
 | `LISTEN` | Console address, default `127.0.0.1:8460`. The installer sets `0.0.0.0:8460` inside the container and limits who reaches the published port. |
 | `DATA_DIR` | Where SQLite, samples and logs live, default `/var/lib/nomad-agent`. |
-| `BROKER_URL`, `BROKER_VHOST` | The ISOGrid broker and the organization's vhost. |
-| `BROKER_CERT_FILE`, `BROKER_KEY_FILE`, `BROKER_CA_FILE` | Client certificate for mutual TLS and the pinned broker CA. |
+| `STREAM_URL` | Where the agent connects: `wss://<api>/api/v1/nomad/stream`. |
+| `CLIENT_CERT_FILE`, `CLIENT_KEY_FILE` | The certificate ISOGrid issued for the cluster, and its key. |
+| `STREAM_CA_FILE` | Optional private CA for the API's TLS (labs); the system roots otherwise. |
 | `CLUSTER_ID`, `ORGANIZATION_ID` | Identifiers issued by ISOGrid when the integration was added. |
 | `INTENT_PUBLIC_KEY_FILE` | ISOGrid's intent-signing public key for this organization. |
 | `VAULT_ADDR`, `VAULT_CACERT_FILE` | The customer's Vault or OpenBao and its private CA, if any. |
@@ -160,7 +166,7 @@ built.
 ## Status
 
 Early scaffold. The configuration, the intent envelope, the console shell with
-its overview page, the installer and the CI exist; the broker client, the
+its overview page, the installer and the CI exist; the stream client, the
 executors, the Vault client, the stores and the console's remaining sections
 are being built in that order.
 

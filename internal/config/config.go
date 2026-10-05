@@ -2,8 +2,9 @@
 //
 // Every value has a safe default so that the binary starts on a laptop with no
 // configuration at all and serves its frontend on localhost. Nothing here is a
-// secret: broker credentials are a client certificate on disk, and every other
-// secret lives in the customer's Vault or OpenBao, reached through VaultAddr.
+// secret: the agent's identity is a client certificate on disk, and every
+// other secret lives in the customer's Vault or OpenBao, reached through
+// VaultAddr.
 package config
 
 import (
@@ -25,17 +26,18 @@ type Config struct {
 	// local log store. Everything the agent remembers lives under it.
 	DataDir string
 
-	// BrokerURL is the AMQP endpoint of the ISOGrid broker (amqps://host:5671).
-	// Empty means the agent runs detached: frontend only, no control channel.
-	BrokerURL string
-	// BrokerVhost is the per-organization virtual host assigned by ISOGrid.
-	BrokerVhost string
-	// BrokerCertFile and BrokerKeyFile hold the per-cluster client certificate
-	// that authenticates the agent (mutual TLS). BrokerCAFile pins the broker's
-	// certificate authority.
-	BrokerCertFile string
-	BrokerKeyFile  string
-	BrokerCAFile   string
+	// StreamURL is where the agent connects: the ISOGrid API over WebSocket
+	// (wss://.../api/v1/nomad/stream), through the same edge and certificate
+	// as the console. Empty means the agent runs detached: console only.
+	StreamURL string
+	// ClientCertFile and ClientKeyFile hold the certificate ISOGrid issued for
+	// this cluster. It is the agent's identity: at connection the agent
+	// signs the nonce the API sends with this key.
+	ClientCertFile string
+	ClientKeyFile  string
+	// StreamCAFile pins a private certificate authority for the API's TLS
+	// (a lab behind a self-signed edge). Empty trusts the system roots.
+	StreamCAFile string
 
 	// ClusterID and OrganizationID are the identifiers ISOGrid assigned when
 	// the customer added the integration; they name the queue the agent reads.
@@ -76,11 +78,10 @@ func FromEnv() (Config, error) {
 	c := Config{
 		Listen:              env("LISTEN", "127.0.0.1:8460"),
 		DataDir:             env("DATA_DIR", "/var/lib/nomad-agent"),
-		BrokerURL:           env("BROKER_URL", ""),
-		BrokerVhost:         env("BROKER_VHOST", ""),
-		BrokerCertFile:      env("BROKER_CERT_FILE", ""),
-		BrokerKeyFile:       env("BROKER_KEY_FILE", ""),
-		BrokerCAFile:        env("BROKER_CA_FILE", ""),
+		StreamURL:           env("STREAM_URL", ""),
+		ClientCertFile:      env("CLIENT_CERT_FILE", ""),
+		ClientKeyFile:       env("CLIENT_KEY_FILE", ""),
+		StreamCAFile:        env("STREAM_CA_FILE", ""),
 		ClusterID:           env("CLUSTER_ID", ""),
 		OrganizationID:      env("ORGANIZATION_ID", ""),
 		IntentPublicKeyFile: env("INTENT_PUBLIC_KEY_FILE", ""),
@@ -106,17 +107,17 @@ func FromEnv() (Config, error) {
 	if c.VaultAddr != "" && c.VaultTokenFile == "" && (c.VaultRoleID == "" || c.VaultSecretIDFile == "") {
 		return c, fmt.Errorf("ISOGRID_NOMAD_VAULT_ADDR needs either VAULT_TOKEN_FILE or VAULT_ROLE_ID with VAULT_SECRET_ID_FILE")
 	}
-	if c.BrokerURL != "" {
+	if c.StreamURL != "" {
 		required := []struct{ name, value string }{
-			{"BROKER_VHOST", c.BrokerVhost},
-			{"BROKER_CERT_FILE", c.BrokerCertFile},
-			{"BROKER_KEY_FILE", c.BrokerKeyFile},
+			{"CLIENT_CERT_FILE", c.ClientCertFile},
+			{"CLIENT_KEY_FILE", c.ClientKeyFile},
+			{"INTENT_PUBLIC_KEY_FILE", c.IntentPublicKeyFile},
 			{"CLUSTER_ID", c.ClusterID},
 			{"ORGANIZATION_ID", c.OrganizationID},
 		}
 		for _, r := range required {
 			if strings.TrimSpace(r.value) == "" {
-				return c, fmt.Errorf("ISOGRID_NOMAD_%s is required when a broker is configured", r.name)
+				return c, fmt.Errorf("ISOGRID_NOMAD_%s is required when a stream is configured", r.name)
 			}
 		}
 	}
@@ -124,7 +125,7 @@ func FromEnv() (Config, error) {
 }
 
 // Attached reports whether a control channel to ISOGrid is configured.
-func (c Config) Attached() bool { return c.BrokerURL != "" }
+func (c Config) Attached() bool { return c.StreamURL != "" }
 
 func env(name, fallback string) string {
 	if v, ok := os.LookupEnv("ISOGRID_NOMAD_" + name); ok {
