@@ -214,12 +214,19 @@ func (m *Manager) Test(ctx context.Context, name string) (string, error) {
 			Login string `json:"login"`
 		}
 		if err := m.github(ctx, c, secret, "/user", &who); err != nil {
-			// Fine-grained and installation tokens may not read /user.
+			// Fine-grained tokens may not read /user, and a GitHub App
+			// installation token (the kind ISOGrid forwards) may read
+			// neither /user nor /user/repos: it lists what the installation
+			// was granted instead.
 			var list []json.RawMessage
-			if err2 := m.github(ctx, c, secret, "/user/repos?per_page=1", &list); err2 != nil {
+			if err2 := m.github(ctx, c, secret, "/user/repos?per_page=1", &list); err2 == nil {
+				return "The token is accepted.", nil
+			}
+			var granted installationRepositories
+			if err3 := m.github(ctx, c, secret, "/installation/repositories?per_page=1", &granted); err3 != nil {
 				return "", err
 			}
-			return "The token is accepted.", nil
+			return fmt.Sprintf("The installation token is accepted; it sees %d repositories.", granted.TotalCount), nil
 		}
 		return "Signed in as " + who.Login + ".", nil
 	case KindGitLab:

@@ -40,6 +40,11 @@ func IsNotFound(err error) bool {
 type Client struct {
 	http *http.Client
 	base string
+	// dial opens a raw connection to the daemon, for the one call that
+	// cannot go through net/http: feeding a container's stdin over a
+	// hijacked attach.
+	dial       func(ctx context.Context) (net.Conn, error)
+	hostHeader string
 }
 
 // New connects to DOCKER_HOST-style endpoints: unix:///path or tcp://host:port.
@@ -57,22 +62,31 @@ func New(host string) (*Client, error) {
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
 	base := "http://docker/" + APIVersion
+	hostHeader := "docker"
+	var dial func(ctx context.Context) (net.Conn, error)
 	switch u.Scheme {
 	case "unix":
 		path := u.Path
 		if path == "" {
 			path = u.Opaque
 		}
-		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		dial = func(ctx context.Context) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", path)
 		}
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) { return dial(ctx) }
 	case "tcp", "http":
 		base = "http://" + u.Host + "/" + APIVersion
+		hostHeader = u.Host
+		host := u.Host
+		dial = func(ctx context.Context) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", host)
+		}
 	default:
 		return nil, fmt.Errorf("docker host: unsupported scheme %q", u.Scheme)
 	}
-	return &Client{http: &http.Client{Transport: transport}, base: base}, nil
+	return &Client{http: &http.Client{Transport: transport}, base: base, dial: dial, hostHeader: hostHeader}, nil
 }
 
 // do performs one request. A non-2xx answer becomes *Error with the daemon's

@@ -47,26 +47,29 @@ var (
 // DeployPayload is `service.deploy`: everything about a service except the
 // secret values, which the agent reads from Vault by reference.
 type DeployPayload struct {
-	Name             string            `json:"name"`
-	Image            string            `json:"image"`
-	Replicas         *uint64           `json:"replicas"`
-	Env              map[string]string `json:"env"`
-	Secrets          []SecretRef       `json:"secrets"`
-	Ports            []Port            `json:"ports"`
-	Networks         []string          `json:"networks"`
-	Aliases          []string          `json:"aliases"`
-	Labels           map[string]string `json:"labels"`
-	Command          []string          `json:"command"`
-	Args             []string          `json:"args"`
-	WorkingDir       string            `json:"working_dir"`
-	User             string            `json:"user"`
-	Resources        *ResourceLimits   `json:"resources"`
-	Volumes          []Volume          `json:"volumes"`
-	Constraints      []string          `json:"constraints"`
-	Restart          *RestartSpec      `json:"restart"`
-	Update           *UpdateSpec       `json:"update"`
-	Healthcheck      *HealthSpec       `json:"healthcheck"`
-	StopGraceSeconds *int64            `json:"stop_grace_seconds"`
+	Name       string            `json:"name"`
+	Image      string            `json:"image"`
+	Replicas   *uint64           `json:"replicas"`
+	Env        map[string]string `json:"env"`
+	Secrets    []SecretRef       `json:"secrets"`
+	Ports      []Port            `json:"ports"`
+	Networks   []string          `json:"networks"`
+	Aliases    []string          `json:"aliases"`
+	Labels     map[string]string `json:"labels"`
+	Command    []string          `json:"command"`
+	Args       []string          `json:"args"`
+	WorkingDir string            `json:"working_dir"`
+	User       string            `json:"user"`
+	Resources  *ResourceLimits   `json:"resources"`
+	Volumes    []Volume          `json:"volumes"`
+	//: Files the service mounts, as Swarm configs or secrets the agent makes
+	//: from their content (placeholders substituted from the Vault).
+	Configs          []ConfigMount `json:"configs"`
+	Constraints      []string      `json:"constraints"`
+	Restart          *RestartSpec  `json:"restart"`
+	Update           *UpdateSpec   `json:"update"`
+	Healthcheck      *HealthSpec   `json:"healthcheck"`
+	StopGraceSeconds *int64        `json:"stop_grace_seconds"`
 	//: Base64 of the registry credential JSON the daemon expects, when the
 	//: image is private. Resolved by the agent from a connection, later.
 	RegistryAuth string `json:"registry_auth"`
@@ -309,6 +312,9 @@ func (s *ServiceExecutor) remove(ctx context.Context, env *intent.Envelope) (any
 	if err := s.docker.RemoveService(ctx, svc.ID); err != nil && !docker.IsNotFound(err) {
 		return nil, err
 	}
+	// Its config objects go with it; one still held by a stopping task is
+	// refused now and reaped when the service is next made under this name.
+	(&PlatformExecutor{services: s}).pruneObjects(ctx, p.Name, nil)
 	return map[string]any{"name": p.Name, "removed": true}, nil
 }
 
@@ -370,7 +376,13 @@ func (s *ServiceExecutor) buildSpec(ctx context.Context, p *DeployPayload, env *
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		envList = append(envList, k+"="+p.Env[k])
+		// A value may name a secret by reference (`{{secret:ref}}`); the
+		// value comes from the Vault here and never travelled.
+		value, err := substitute(ctx, s.secrets, p.Env[k])
+		if err != nil {
+			return spec, fmt.Errorf("environment variable %q: %w", k, err)
+		}
+		envList = append(envList, k+"="+value)
 	}
 	if len(p.Secrets) > 0 {
 		if s.secrets == nil {
@@ -426,7 +438,12 @@ func (s *ServiceExecutor) buildSpec(ctx context.Context, p *DeployPayload, env *
 		if !namePattern.MatchString(v.Name) || !strings.HasPrefix(v.Target, "/") {
 			return spec, fmt.Errorf("volume %q: a named volume and an absolute target path", v.Name)
 		}
-		mounts = append(mounts, docker.Mount{Type: "volume", Source: v.Name, Target: v.Target, ReadOnly: v.ReadOnly})
+		mounts = append(mounts, docker.Mount{
+			Type: "volume", Source: v.Name, Target: v.Target, ReadOnly: v.ReadOnly,
+			// Labelled at creation, so `volume.remove` can later tell the
+			// agent's data volumes from the operator's.
+			VolumeOptions: &docker.VolumeOptions{Labels: map[string]string{ManagedLabel: "true", LabelOrganization: s.orgID}},
+		})
 	}
 
 	ports := make([]docker.PortConfig, 0, len(p.Ports))
@@ -464,6 +481,14 @@ func (s *ServiceExecutor) buildSpec(ctx context.Context, p *DeployPayload, env *
 	if p.StopGraceSeconds != nil {
 		grace := *p.StopGraceSeconds * int64(time.Second)
 		container.StopGracePeriod = &grace
+	}
+	if len(p.Configs) > 0 {
+		platform := &PlatformExecutor{services: s}
+		configs, secrets, _, err := platform.configObjects(ctx, p.Name, p.Configs)
+		if err != nil {
+			return spec, err
+		}
+		container.Configs, container.Secrets = configs, secrets
 	}
 	if p.Healthcheck != nil && len(p.Healthcheck.Test) > 0 {
 		container.Healthcheck = &docker.Healthcheck{

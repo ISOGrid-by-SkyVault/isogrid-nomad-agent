@@ -60,3 +60,39 @@ func TestLiveBuild(t *testing.T) {
 		t.Fatalf("a failing build: %v\n%s", err, log.String())
 	}
 }
+
+// Against a real engine: a one-off job fed on stdin, as the database
+// provisioner's client containers are. Run with NOMAD_LIVE_DOCKER=1.
+func TestLiveRunJob(t *testing.T) {
+	if os.Getenv("NOMAD_LIVE_DOCKER") == "" {
+		t.Skip("set NOMAD_LIVE_DOCKER=1 with a Docker socket to run a job for real")
+	}
+	client, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	result, err := client.RunJob(ctx, JobSpec{
+		Image:   "alpine:3.20",
+		Command: []string{"sh", "-c", "cat; echo from-stderr >&2; exit 3"},
+		Env:     []string{"A=1"},
+		Stdin:   "hello from stdin\nsecond line\n",
+		Labels:  map[string]string{"isogrid.managed": "true"},
+		Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 3 || !strings.Contains(result.Stdout, "second line") || !strings.Contains(result.Stderr, "from-stderr") {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	// A job that overruns is killed and says so.
+	quick, err := client.RunJob(ctx, JobSpec{Image: "alpine:3.20", Command: []string{"sleep", "30"}, Timeout: 3 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !quick.TimedOut || quick.ExitCode != 124 {
+		t.Fatalf("expected a timeout: %+v", quick)
+	}
+}

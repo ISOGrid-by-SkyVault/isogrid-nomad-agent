@@ -191,9 +191,24 @@ Built:
   ISOGrid forwards its App's one-hour tokens and renews them. The agent never
   lets ISOGrid overwrite or remove a connection an operator made here.
 
+- the primitives ISOGrid's managed databases (PostgreSQL single, pooled and
+  Patroni HA, MySQL, MongoDB) are provisioned with on this cluster, each
+  generic and each under the same guard rails: `service.inspect`,
+  `service.update` (image, size, networks, placement, mounted files),
+  `nodes.list`, `network.ensure|remove` (overlays the agent made, only),
+  `volume.remove` (volumes the agent made, on this node, only),
+  `secret.ensure|remove` and `job.run` (a one-off container on an overlay,
+  fed on stdin, for the SQL and the probes). ISOGrid never writes a database
+  password: it sends `{{secret:databases/<instance>/<name>}}` placeholders,
+  the agent mints the values in your Vault (`secret.ensure`) and substitutes
+  them in environment, mounted files and stdin itself. The files a router or
+  pooler mounts become Swarm configs, or Swarm secrets when they hold
+  passwords (PgBouncer's userlist). The passwords are readable in this
+  console's Secrets section and nowhere on ISOGrid.
+
 Next: an approval step for deploys an operator wants to review, a log store
-with its own retention (logs are read from the engine today), and the
-Kubernetes executor.
+with its own retention (logs are read from the engine today), backups of
+managed databases on an agent cluster, and the Kubernetes executor.
 
 ## The console
 

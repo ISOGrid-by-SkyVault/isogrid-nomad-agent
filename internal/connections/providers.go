@@ -55,6 +55,20 @@ func firstLine(text string) string {
 
 // -- GitHub --------------------------------------------------------------------------
 
+// githubRepository is the part of a repository document both listings share.
+type githubRepository struct {
+	FullName      string `json:"full_name"`
+	DefaultBranch string `json:"default_branch"`
+	Private       bool   `json:"private"`
+}
+
+// installationRepositories is GET /installation/repositories: what a GitHub
+// App installation token may see.
+type installationRepositories struct {
+	TotalCount   int                `json:"total_count"`
+	Repositories []githubRepository `json:"repositories"`
+}
+
 func githubAPI(c *Connection) string {
 	if c.Host == "github.com" {
 		return "https://api.github.com"
@@ -94,13 +108,17 @@ func (m *Manager) Repositories(ctx context.Context, name, query string, page int
 	}
 	out := []Repository{}
 	if c.Kind == KindGitHub {
-		var rows []struct {
-			FullName      string `json:"full_name"`
-			DefaultBranch string `json:"default_branch"`
-			Private       bool   `json:"private"`
-		}
+		var rows []githubRepository
 		if err := m.github(ctx, c, token, fmt.Sprintf("/user/repos?per_page=%d&page=%d&sort=pushed", pageSize, page), &rows); err != nil {
-			return nil, err
+			// A GitHub App installation token cannot list a user's
+			// repositories; it lists the ones the installation was granted.
+			// Tried second rather than decided from the token's shape, so a
+			// token of either kind works whoever typed or forwarded it.
+			var granted installationRepositories
+			if err2 := m.github(ctx, c, token, fmt.Sprintf("/installation/repositories?per_page=%d&page=%d", pageSize, page), &granted); err2 != nil {
+				return nil, err
+			}
+			rows = granted.Repositories
 		}
 		for _, r := range rows {
 			if query == "" || strings.Contains(strings.ToLower(r.FullName), strings.ToLower(query)) {

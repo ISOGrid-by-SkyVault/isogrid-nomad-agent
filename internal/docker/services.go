@@ -42,13 +42,28 @@ type ContainerSpec struct {
 	StopGracePeriod *int64            `json:"StopGracePeriod,omitempty"`
 	Healthcheck     *Healthcheck      `json:"HealthCheck,omitempty"`
 	Secrets         []SecretReference `json:"Secrets,omitempty"`
+	Configs         []ConfigReference `json:"Configs,omitempty"`
 }
 
 type Mount struct {
-	Type     string `json:"Type"` // volume only; bind is refused upstream
-	Source   string `json:"Source,omitempty"`
-	Target   string `json:"Target"`
-	ReadOnly bool   `json:"ReadOnly,omitempty"`
+	Type          string         `json:"Type"` // volume only; bind is refused upstream
+	Source        string         `json:"Source,omitempty"`
+	Target        string         `json:"Target"`
+	ReadOnly      bool           `json:"ReadOnly,omitempty"`
+	VolumeOptions *VolumeOptions `json:"VolumeOptions,omitempty"`
+}
+
+// VolumeOptions label the volume the scheduler creates for a mount, which is
+// how the agent later tells its own data volumes from the operator's.
+type VolumeOptions struct {
+	Labels map[string]string `json:"Labels,omitempty"`
+}
+
+// ConfigReference mounts a Swarm config as a file, like SecretReference.
+type ConfigReference struct {
+	File       SecretFile `json:"File"`
+	ConfigID   string     `json:"ConfigID"`
+	ConfigName string     `json:"ConfigName"`
 }
 
 type Healthcheck struct {
@@ -174,11 +189,12 @@ type Task struct {
 
 // Network is the part of GET /networks/{name} the agent checks.
 type Network struct {
-	ID         string `json:"Id"`
-	Name       string `json:"Name"`
-	Driver     string `json:"Driver"`
-	Scope      string `json:"Scope"`
-	Attachable bool   `json:"Attachable"`
+	ID         string            `json:"Id"`
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver"`
+	Scope      string            `json:"Scope"`
+	Attachable bool              `json:"Attachable"`
+	Labels     map[string]string `json:"Labels"`
 }
 
 // CreateService creates a service and returns its id.

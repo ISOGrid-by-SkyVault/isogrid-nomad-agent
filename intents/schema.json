@@ -30,7 +30,15 @@
         "config.write",
         "secrets.references",
         "connection.put",
-        "connection.remove"
+        "connection.remove",
+        "service.update",
+        "service.inspect",
+        "nodes.list",
+        "network.ensure",
+        "network.remove",
+        "volume.remove",
+        "secret.ensure",
+        "secret.remove"
       ]
     },
     "organization_id": { "type": "string" },

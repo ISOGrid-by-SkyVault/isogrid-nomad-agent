@@ -218,6 +218,14 @@ func run() error {
 		exec.SetJournal(journal{db})
 		services = executor.RegisterServices(exec, engine, cfg.OrganizationID, resolver)
 		executor.RegisterSources(exec, services, sources, runner)
+		// Managed databases and the like: the primitives the platform's
+		// provisioner needs, each generic. Minting and forgetting secrets
+		// needs the Vault; without one those two refuse.
+		var store executor.SecretStore
+		if secrets != nil {
+			store = secrets
+		}
+		executor.RegisterPlatform(exec, services, store)
 		client, err = stream.New(stream.Options{
 			Inventory:      services.Inventory,
 			URL:            cfg.StreamURL,
