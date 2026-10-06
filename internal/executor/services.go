@@ -141,6 +141,9 @@ type ServiceStatus struct {
 	Ports       []Port       `json:"ports"`
 	Tasks       []TaskStatus `json:"tasks"`
 	UpdatedAt   time.Time    `json:"updated_at"`
+	// Set by `service.update` when it was asked to set the aliases, so the
+	// platform can tell an agent that did it from one too old to know how.
+	AliasesSet bool `json:"aliases_set,omitempty"`
 }
 
 type TaskStatus struct {

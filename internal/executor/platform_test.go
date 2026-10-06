@@ -381,3 +381,53 @@ func base64Decode(s string) (string, error) {
 	}
 	return string(out), nil
 }
+
+func TestUpdateSetsTheAliasesOfARunningService(t *testing.T) {
+	e, fake, private := setupPlatform(t, &mapStore{values: map[string]string{}})
+	r := reply(t, e, private, "service.deploy", map[string]any{
+		"name": "acme-shop", "image": "nginx:1.27", "no_wait": true,
+		"networks": []string{"isogrid-nomad"}, "aliases": []string{"shop"},
+	})
+	if r.Status != "ok" {
+		t.Fatalf("deploy: %s %s", r.Status, r.Error)
+	}
+	aliases := func() []any {
+		spec := fake.services["acme-shop"]["Spec"].(map[string]any)
+		network := spec["TaskTemplate"].(map[string]any)["Networks"].([]any)[0].(map[string]any)
+		got, _ := network["Aliases"].([]any)
+		return got
+	}
+	up := reply(t, e, private, "service.update", map[string]any{
+		"name": "acme-shop", "aliases": map[string]any{"network": "isogrid-nomad", "names": []string{"store", "api"}},
+	})
+	if up.Status != "ok" {
+		t.Fatalf("update: %s %s", up.Status, up.Error)
+	}
+	if got := aliases(); len(got) != 2 || got[0] != "store" || got[1] != "api" {
+		t.Fatalf("the aliases are replaced, not added to: %v", got)
+	}
+	if status, ok := up.Result.(*ServiceStatus); !ok || !status.AliasesSet {
+		t.Fatalf("the reply says the aliases were set: %+v", up.Result)
+	}
+
+	// None at all removes them.
+	up = reply(t, e, private, "service.update", map[string]any{
+		"name": "acme-shop", "aliases": map[string]any{"network": "isogrid-nomad", "names": []string{}},
+	})
+	if up.Status != "ok" || len(aliases()) != 0 {
+		t.Fatalf("an empty list removes the aliases: %s %v", up.Status, aliases())
+	}
+
+	bad := reply(t, e, private, "service.update", map[string]any{
+		"name": "acme-shop", "aliases": map[string]any{"network": "isogrid-nomad", "names": []string{"Not_A_Label"}},
+	})
+	if bad.Status != "error" || !strings.Contains(bad.Error, "alias") {
+		t.Fatalf("a name that is not a DNS label is refused: %s %s", bad.Status, bad.Error)
+	}
+	elsewhere := reply(t, e, private, "service.update", map[string]any{
+		"name": "acme-shop", "aliases": map[string]any{"network": "vault_default", "names": []string{"x"}},
+	})
+	if elsewhere.Status != "error" {
+		t.Fatalf("a network the service is not on is refused: %s", elsewhere.Status)
+	}
+}

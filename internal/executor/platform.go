@@ -222,7 +222,20 @@ type UpdatePayload struct {
 	RemoveNetworks []string        `json:"remove_networks"`
 	AddConstraints []string        `json:"add_constraints"`
 	Configs        []ConfigMount   `json:"configs"`
+	Aliases        *AliasChange    `json:"aliases"`
 }
+
+// AliasChange gives a service exactly these extra DNS names on one of the
+// networks it is attached to. An empty list removes them all.
+type AliasChange struct {
+	Network string   `json:"network"`
+	Names   []string `json:"names"`
+}
+
+const maxAliases = 16
+
+// A DNS label: what another service on the network can look up.
+var aliasPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func (p *PlatformExecutor) update(ctx context.Context, env *intent.Envelope) (any, error) {
 	var body UpdatePayload
@@ -284,6 +297,30 @@ func (p *PlatformExecutor) update(ctx context.Context, env *intent.Envelope) (an
 		}
 		spec.TaskTemplate.Networks = kept
 	}
+	if body.Aliases != nil {
+		if len(body.Aliases.Names) > maxAliases {
+			return nil, fmt.Errorf("at most %d aliases", maxAliases)
+		}
+		for _, alias := range body.Aliases.Names {
+			if !aliasPattern.MatchString(alias) {
+				return nil, fmt.Errorf("alias %q: lowercase letters, digits and dashes", alias)
+			}
+		}
+		n, err := p.swarmNetwork(ctx, body.Aliases.Network)
+		if err != nil {
+			return nil, err
+		}
+		found := false
+		for i, attachment := range spec.TaskTemplate.Networks {
+			if attachment.Target == n.ID || attachment.Target == n.Name {
+				spec.TaskTemplate.Networks[i].Aliases = append([]string{}, body.Aliases.Names...)
+				found = true
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("the service is not attached to network %q", body.Aliases.Network)
+		}
+	}
 	if len(body.AddConstraints) > 0 {
 		for _, c := range body.AddConstraints {
 			if !strings.HasPrefix(c, "node.") {
@@ -317,7 +354,12 @@ func (p *PlatformExecutor) update(ctx context.Context, env *intent.Envelope) (an
 	if body.Configs != nil {
 		p.pruneObjects(ctx, body.Name, fresh)
 	}
-	return p.services.report(ctx, body.Name)
+	status, err := p.services.report(ctx, body.Name)
+	if err != nil {
+		return nil, err
+	}
+	status.AliasesSet = body.Aliases != nil
+	return status, nil
 }
 
 func contains(list []string, value string) bool {
