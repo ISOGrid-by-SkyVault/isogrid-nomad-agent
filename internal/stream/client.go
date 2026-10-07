@@ -47,6 +47,12 @@ const (
 	stableAfter      = 60 * time.Second
 	maxMessageBytes  = 1 << 20
 	maxInFlight      = 4
+	// handlerTimeout bounds one intent's execution. It runs under the agent's
+	// lifetime, not the session's: a link that drops mid-update must not
+	// cancel a half-done swap on the device.
+	handlerTimeout = 30 * time.Minute
+	// outboxFlush is how many kept replies one connection re-sends at once.
+	outboxFlush = 200
 )
 
 // State of the channel as the operator sees it.
@@ -72,6 +78,24 @@ type Status struct {
 	LastIntentAt     *time.Time `json:"last_intent_at,omitempty"`
 	CertificateCN    string     `json:"certificate_cn,omitempty"`
 	CertificateUntil time.Time  `json:"certificate_not_after"`
+	// DeviceID is how this agent introduces itself in a fleet; empty on a
+	// plain cluster.
+	DeviceID string `json:"device_id,omitempty"`
+}
+
+// Outbox keeps replies until the platform acknowledges them, so a reply
+// computed while the link was down reaches ISOGrid at the next connection
+// instead of being lost with the socket.
+type Outbox interface {
+	Put(ctx context.Context, id string, body []byte) error
+	Remove(ctx context.Context, id string) error
+	Pending(ctx context.Context, limit int) ([]PendingReply, error)
+}
+
+// PendingReply is one kept reply: the full frame to send, by intent id.
+type PendingReply struct {
+	ID   string
+	Body []byte
 }
 
 // Handler turns an intent body into a reply body. It must not panic and it
@@ -90,6 +114,12 @@ type Options struct {
 	Capabilities   []string
 	Handle         Handler
 	Logf           func(format string, args ...any)
+	// DeviceID and DeviceName are sent in the hello so a fleet's devices can
+	// be told apart; the platform ignores them for a plain cluster.
+	DeviceID   string
+	DeviceName string
+	// Outbox, when set, makes replies survive a dropped link and a restart.
+	Outbox Outbox
 	// Inventory reports what the platform should know about the cluster
 	// without asking: today the overlay networks a service may attach to.
 	// It is sent in the hello and again in a heartbeat whenever it changed.
@@ -108,6 +138,11 @@ type Client struct {
 	intents  atomic.Uint64
 	replies  atomic.Uint64
 	lastSeen atomic.Int64
+
+	// conn is the live session's socket, for replies that finish after the
+	// session that received the intent ended.
+	connMu sync.Mutex
+	conn   *websocket.Conn
 }
 
 // New loads the identity files and prepares the client. It does not connect.
@@ -154,6 +189,7 @@ func New(opt Options) (*Client, error) {
 		Since:            time.Now(),
 		CertificateCN:    cert.Subject.CommonName,
 		CertificateUntil: cert.NotAfter,
+		DeviceID:         opt.DeviceID,
 	}
 	return c, nil
 }
@@ -254,6 +290,7 @@ type frame struct {
 	Type   string          `json:"type"`
 	Body   json.RawMessage `json:"body"`
 	Reason string          `json:"reason"`
+	ID     string          `json:"id"`
 }
 
 // session is one connection: handshake, then pumps until something ends it.
@@ -293,6 +330,10 @@ func (c *Client) session(ctx context.Context) error {
 		"version":      c.opt.Version,
 		"capabilities": c.opt.Capabilities,
 	}
+	if c.opt.DeviceID != "" {
+		hello["device"] = c.opt.DeviceID
+		hello["device_name"] = c.opt.DeviceName
+	}
 	lastInventory := ""
 	if inv, digest, ok := c.inventory(ctx); ok {
 		hello["inventory"] = inv
@@ -326,6 +367,9 @@ func (c *Client) session(ctx context.Context) error {
 
 	sessionCtx, stop := context.WithCancel(ctx)
 	defer stop()
+	c.setConn(conn)
+	defer c.setConn(nil)
+	c.flushOutbox(sessionCtx)
 	errs := make(chan error, 2)
 	go func() { errs <- c.heartbeats(sessionCtx, conn, heartbeat, lastInventory) }()
 	go func() { errs <- c.read(sessionCtx, conn) }()
@@ -402,17 +446,107 @@ func (c *Client) read(ctx context.Context, conn *websocket.Conn) error {
 			}
 			go func(body json.RawMessage) {
 				defer func() { <-inflight }()
-				reply := c.handle(ctx, body)
-				if err := writeJSON(ctx, conn, map[string]any{"type": "reply", "body": reply}); err != nil {
-					c.opt.Logf("stream: reply not sent: %v", err)
-					return
-				}
-				c.replies.Add(1)
+				// Under the agent's lifetime, not the session's: the link
+				// dropping mid-update must not cancel the update.
+				execCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), handlerTimeout)
+				defer cancel()
+				reply := c.handle(execCtx, body)
+				c.deliver(execCtx, reply)
 			}(f.Body)
+		case "ack":
+			// Recorded by the platform: the kept copy can go.
+			if c.opt.Outbox != nil && f.ID != "" {
+				if err := c.opt.Outbox.Remove(ctx, f.ID); err != nil {
+					c.opt.Logf("stream: reply %s not forgotten: %v", f.ID, err)
+				}
+			}
 		case "error":
 			c.opt.Logf("stream: the API reports: %s", f.Reason)
 		}
 	}
+}
+
+// deliver sends a reply on whatever session is live, keeping it in the outbox
+// until the platform acknowledges it. Without an outbox a reply that cannot
+// be written is logged and lost, as before.
+func (c *Client) deliver(ctx context.Context, reply any) {
+	data, err := json.Marshal(map[string]any{"type": "reply", "body": reply})
+	if err != nil {
+		c.opt.Logf("stream: reply not encoded: %v", err)
+		return
+	}
+	id := replyID(data)
+	if c.opt.Outbox != nil && id != "" {
+		if err := c.opt.Outbox.Put(ctx, id, data); err != nil {
+			c.opt.Logf("stream: reply %s not kept: %v", id, err)
+		}
+	}
+	if err := c.writeLive(ctx, data); err != nil {
+		if c.opt.Outbox != nil && id != "" {
+			c.opt.Logf("stream: reply %s kept for the next connection: %v", id, err)
+		} else {
+			c.opt.Logf("stream: reply not sent: %v", err)
+		}
+		return
+	}
+	c.replies.Add(1)
+}
+
+// flushOutbox re-sends every kept reply at the start of a session. The
+// platform ignores one it already has and acknowledges each, which removes it.
+func (c *Client) flushOutbox(ctx context.Context) {
+	if c.opt.Outbox == nil {
+		return
+	}
+	pending, err := c.opt.Outbox.Pending(ctx, outboxFlush)
+	if err != nil {
+		c.opt.Logf("stream: outbox not read: %v", err)
+		return
+	}
+	if len(pending) == 0 {
+		return
+	}
+	sent := 0
+	for _, p := range pending {
+		if err := c.writeLive(ctx, p.Body); err != nil {
+			c.opt.Logf("stream: kept reply %s not re-sent: %v", p.ID, err)
+			break
+		}
+		sent++
+	}
+	c.opt.Logf("stream: re-sent %d kept repl%s", sent, map[bool]string{true: "y", false: "ies"}[sent == 1])
+}
+
+func (c *Client) setConn(conn *websocket.Conn) {
+	c.connMu.Lock()
+	c.conn = conn
+	c.connMu.Unlock()
+}
+
+// writeLive writes one frame on the live session, if there is one.
+func (c *Client) writeLive(ctx context.Context, data []byte) error {
+	c.connMu.Lock()
+	conn := c.conn
+	c.connMu.Unlock()
+	if conn == nil {
+		return errors.New("not connected")
+	}
+	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	return conn.Write(ctx, websocket.MessageText, data)
+}
+
+// replyID reads the intent id out of an encoded reply frame.
+func replyID(data []byte) string {
+	var f struct {
+		Body struct {
+			ID string `json:"id"`
+		} `json:"body"`
+	}
+	if json.Unmarshal(data, &f) != nil {
+		return ""
+	}
+	return f.Body.ID
 }
 
 // handle guards the handler: a panic becomes an error reply, never a crash of

@@ -44,6 +44,12 @@ type Config struct {
 	ClusterID      string
 	OrganizationID string
 
+	// DeviceID and DeviceName tell a fleet's devices apart when the same
+	// bundle is installed on many of them. Empty, the agent uses the Swarm
+	// node id and the engine's host name. A plain cluster ignores both.
+	DeviceID   string
+	DeviceName string
+
 	// IntentPublicKeyFile pins the control plane's intent-signing public key.
 	// Intents whose signature does not verify are dropped before parsing.
 	IntentPublicKeyFile string
@@ -84,6 +90,8 @@ func FromEnv() (Config, error) {
 		StreamCAFile:        env("STREAM_CA_FILE", ""),
 		ClusterID:           env("CLUSTER_ID", ""),
 		OrganizationID:      env("ORGANIZATION_ID", ""),
+		DeviceID:            env("DEVICE_ID", ""),
+		DeviceName:          env("DEVICE_NAME", ""),
 		IntentPublicKeyFile: env("INTENT_PUBLIC_KEY_FILE", ""),
 		VaultAddr:           env("VAULT_ADDR", ""),
 		VaultCACertFile:     env("VAULT_CACERT_FILE", ""),

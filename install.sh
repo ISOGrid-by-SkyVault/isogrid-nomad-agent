@@ -230,7 +230,7 @@ install() {
         local k v
         while IFS='=' read -r k v; do
             case "$k" in
-                STREAM_URL|CLUSTER_ID|ORGANIZATION_ID) env_args+=(--env "ISOGRID_NOMAD_$k=$v") ;;
+                STREAM_URL|CLUSTER_ID|ORGANIZATION_ID|DEVICE_ID|DEVICE_NAME) env_args+=(--env "ISOGRID_NOMAD_$k=$v") ;;
             esac
         done < "$A_BUNDLE_DIR/agent.env"
         docker secret create "$SERVICE-client-key-$stamp" "$A_BUNDLE_DIR/client.key" >/dev/null

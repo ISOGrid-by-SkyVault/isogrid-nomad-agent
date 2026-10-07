@@ -155,6 +155,59 @@ func (c *Client) Push(ctx context.Context, image, registryAuth string, log io.Wr
 	return digest, err
 }
 
+// ImageInfo is the part of GET /images/{ref}/json the agent uses.
+type ImageInfo struct {
+	ID          string   `json:"Id"`
+	RepoDigests []string `json:"RepoDigests"`
+}
+
+// Pull brings an image onto this node without touching any service, so a
+// later update swaps to layers already on disk. A fleet device that loses
+// its link during the pull keeps running what it has; a pull that fails
+// changes nothing.
+func (c *Client) Pull(ctx context.Context, image, registryAuth string, log io.Writer) error {
+	query := url.Values{}
+	if strings.Contains(image, "@") {
+		query.Set("fromImage", image)
+	} else {
+		name, tag := image, "latest"
+		if i := strings.LastIndex(image, ":"); i > strings.LastIndex(image, "/") {
+			name, tag = image[:i], image[i+1:]
+		}
+		query.Set("fromImage", name)
+		query.Set("tag", tag)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/images/create?"+query.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	if registryAuth != "" {
+		req.Header.Set("X-Registry-Auth", registryAuth)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("docker: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return engineError(resp)
+	}
+	if log == nil {
+		log = io.Discard
+	}
+	return follow(resp.Body, log, func(json.RawMessage) {})
+}
+
+// InspectImage reports an image present on this node; a not-found error
+// when it is absent.
+func (c *Client) InspectImage(ctx context.Context, ref string) (*ImageInfo, error) {
+	var info ImageInfo
+	if err := c.do(ctx, http.MethodGet, "/images/"+url.PathEscape(ref)+"/json", nil, nil, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
 func engineError(resp *http.Response) error {
 	var msg struct {
 		Message string `json:"message"`

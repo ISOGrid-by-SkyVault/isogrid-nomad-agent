@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"io"
 	"context"
 	"encoding/json"
 	"errors"
@@ -79,6 +80,11 @@ type DeployPayload struct {
 	//: When set, the service is created or updated but the intent returns
 	//: before the tasks converge.
 	NoWait bool `json:"no_wait"`
+	//: Set by the platform for a fleet: pull the image before the service is
+	//: touched, swap only once it is on disk, and report a rollback as a
+	//: failure instead of a degraded success. A device that loses its link
+	//: or power mid-way keeps or returns to the version it had.
+	Atomic bool `json:"atomic"`
 }
 
 type SecretRef struct {
@@ -240,6 +246,11 @@ func (s *ServiceExecutor) deploy(ctx context.Context, env *intent.Envelope) (any
 			return nil, err
 		}
 	}
+	if p.Atomic {
+		if err := s.prepull(ctx, &p); err != nil {
+			return nil, err
+		}
+	}
 	existing, err := s.docker.InspectService(ctx, p.Name)
 	switch {
 	case err == nil:
@@ -259,7 +270,45 @@ func (s *ServiceExecutor) deploy(ctx context.Context, env *intent.Envelope) (any
 	if p.NoWait {
 		return s.report(ctx, p.Name)
 	}
-	return s.converge(ctx, p.Name)
+	result, err := s.converge(ctx, p.Name)
+	if err != nil || !p.Atomic {
+		return result, err
+	}
+	if st, ok := result.(*ServiceStatus); ok && rolledBack(st.UpdateState) {
+		// Swarm tried the new version, it did not hold, and the previous
+		// one is back (or the update is paused on it). For a fleet that
+		// is a failure to report, not a service to call degraded.
+		return nil, fmt.Errorf("the update did not hold and was rolled back to the previous version (%s): %s", st.UpdateState, st.Message)
+	}
+	return result, nil
+}
+
+// rolledBack reports an update state in which the new version is not what
+// runs.
+func rolledBack(state string) bool {
+	switch state {
+	case "rollback_started", "rollback_paused", "rollback_completed", "paused":
+		return true
+	}
+	return false
+}
+
+// prepull brings the image onto this node before any service is touched, so
+// the swap that follows is local and quick. A pull that fails changes
+// nothing. An image that only exists here (built on this node, never pushed)
+// passes when the engine already has it.
+func (s *ServiceExecutor) prepull(ctx context.Context, p *DeployPayload) error {
+	pullErr := s.docker.Pull(ctx, p.Image, p.RegistryAuth, io.Discard)
+	if pullErr == nil {
+		if _, err := s.docker.InspectImage(ctx, p.Image); err != nil {
+			return fmt.Errorf("image %s was pulled but is not on this node: %w", p.Image, err)
+		}
+		return nil
+	}
+	if _, err := s.docker.InspectImage(ctx, p.Image); err == nil {
+		return nil
+	}
+	return fmt.Errorf("image %s could not be pulled, nothing was changed: %w", p.Image, pullErr)
 }
 
 func (s *ServiceExecutor) status(ctx context.Context, env *intent.Envelope) (any, error) {

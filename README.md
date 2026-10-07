@@ -145,6 +145,7 @@ defaults. Without a stream URL the agent runs detached: console only.
 | `CLIENT_CERT_FILE`, `CLIENT_KEY_FILE` | The certificate ISOGrid issued for the cluster, and its key. |
 | `STREAM_CA_FILE` | Optional private CA for the API's TLS (labs); the system roots otherwise. |
 | `CLUSTER_ID`, `ORGANIZATION_ID` | Identifiers issued by ISOGrid when the integration was added. |
+| `DEVICE_ID`, `DEVICE_NAME` | Fleets only: how this device introduces itself. Default the Swarm node id and the engine's host name. |
 | `INTENT_PUBLIC_KEY_FILE` | ISOGrid's intent-signing public key for this organization. |
 | `VAULT_ADDR`, `VAULT_CACERT_FILE` | The customer's Vault or OpenBao and its private CA, if any. |
 | `VAULT_TOKEN_FILE` or `VAULT_ROLE_ID` + `VAULT_SECRET_ID_FILE` | How the agent authenticates to Vault. |
@@ -243,6 +244,22 @@ for anything beyond the break-glass account.
 - A reply is `{id, kind, cluster_id, status, result?, error?, code?,
   agent_version, completed_at}` with `status` one of `ok`, `error`,
   `rejected` (the envelope did not verify; `code` says why) or `unsupported`.
+
+## Fleets
+
+The same bundle may be installed on many devices (a *fleet* on ISOGrid). Each
+agent then says in its hello which device it is (`device`, `device_name`:
+the Swarm node id and host name unless `DEVICE_ID`/`DEVICE_NAME` are set),
+reads a queue of its own, and every intent sent to the fleet reaches every
+device. Three things make an update survive a link that drops half-way:
+
+- intents run under the agent's lifetime, not the session's, so a dropped
+  socket never cancels a half-done update;
+- a deploy with `atomic: true` pulls the image before the service is
+  touched, swaps only once it is on disk, and reports a rollback as a
+  failure rather than a degraded success;
+- replies are kept in the local store until the platform acknowledges them
+  (`ack` frame), and re-sent at the next connection.
 
 ## Licence
 

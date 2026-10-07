@@ -106,9 +106,69 @@ func check() error {
 	if _, err := intent.LoadPublicKey(cfg.IntentPublicKeyFile); err != nil {
 		return fmt.Errorf("intent public key: %w", err)
 	}
-	fmt.Printf("identity   %s, valid until %s\ncluster    %s\norg        %s\n",
-		cert.Subject.CommonName, cert.NotAfter.UTC().Format(time.RFC3339), cfg.ClusterID, cfg.OrganizationID)
+	fmt.Printf("identity   %s, valid until %s\ncluster    %s\norg        %s\ndevice     %s\n",
+		cert.Subject.CommonName, cert.NotAfter.UTC().Format(time.RFC3339), cfg.ClusterID, cfg.OrganizationID,
+		orDefault(cfg.DeviceID, "the Swarm node id (fleets only)"))
 	return nil
+}
+
+func orDefault(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+// deviceIdentity is how this agent introduces itself in a fleet: what the
+// operator configured, else the Swarm node id and the engine's host name,
+// else the container's host name. The platform ignores it for a plain
+// cluster.
+func deviceIdentity(ctx context.Context, cfg config.Config, engine *docker.Client) (id, name string) {
+	id, name = cfg.DeviceID, cfg.DeviceName
+	if id == "" || name == "" {
+		infoCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if info, err := engine.Info(infoCtx); err == nil {
+			if id == "" {
+				id = info.Swarm.NodeID
+			}
+			if name == "" {
+				name = info.Name
+			}
+		}
+	}
+	if id == "" {
+		id, _ = os.Hostname()
+	}
+	if name == "" {
+		name = id
+	}
+	return id, name
+}
+
+// outbox adapts the store to the stream's reply outbox.
+type outbox struct {
+	store *store.Store
+}
+
+func (o outbox) Put(ctx context.Context, id string, body []byte) error {
+	return o.store.PutReply(ctx, id, body)
+}
+
+func (o outbox) Remove(ctx context.Context, id string) error {
+	return o.store.RemoveReply(ctx, id)
+}
+
+func (o outbox) Pending(ctx context.Context, limit int) ([]stream.PendingReply, error) {
+	rows, err := o.store.PendingReplies(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]stream.PendingReply, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, stream.PendingReply{ID: r.ID, Body: r.Body})
+	}
+	return out, nil
 }
 
 func orNone(s string) string {
@@ -226,7 +286,11 @@ func run() error {
 			store = secrets
 		}
 		executor.RegisterPlatform(exec, services, store)
+		deviceID, deviceName := deviceIdentity(ctx, cfg, engine)
 		client, err = stream.New(stream.Options{
+			DeviceID:       deviceID,
+			DeviceName:     deviceName,
+			Outbox:         outbox{db},
 			Inventory:      services.Inventory,
 			URL:            cfg.StreamURL,
 			CertFile:       cfg.ClientCertFile,

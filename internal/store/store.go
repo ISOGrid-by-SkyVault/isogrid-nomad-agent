@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS intents (
 	duration_ms INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS intents_received ON intents(received_at DESC);
+CREATE TABLE IF NOT EXISTS replies (
+	id         TEXT PRIMARY KEY,
+	body       BLOB NOT NULL,
+	created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS connections (
 	name       TEXT PRIMARY KEY,
 	kind       TEXT NOT NULL,
@@ -363,6 +368,9 @@ func (s *Store) Prune(ctx context.Context, sampleRetention time.Duration) error 
 		{`DELETE FROM samples WHERE ts < ?`, now.Add(-sampleRetention).Unix()},
 		{`DELETE FROM intents WHERE kind IN ('service.status', 'build.status', 'ping', 'networks.list', 'capabilities.describe', 'repositories.list', 'repository.refs', 'repository.commits', 'registry.images') AND received_at < ?`, now.Add(-24 * time.Hour).Unix()},
 		{`DELETE FROM intents WHERE received_at < ?`, now.Add(-90 * 24 * time.Hour).Unix()},
+		// A reply the platform never acknowledged in a week is about an
+		// intent it gave up on long ago.
+		{`DELETE FROM replies WHERE created_at < ?`, now.Add(-7 * 24 * time.Hour).Unix()},
 	}
 	for _, step := range steps {
 		if _, err := s.db.ExecContext(ctx, step.query, step.arg); err != nil {
@@ -370,6 +378,52 @@ func (s *Store) Prune(ctx context.Context, sampleRetention time.Duration) error 
 		}
 	}
 	return nil
+}
+
+// -- replies --------------------------------------------------------------------------
+
+// PendingReply is a reply the platform has not acknowledged yet. It is kept
+// so that a result computed while the link was down (a device finishing an
+// update in a tunnel) reaches ISOGrid at the next connection.
+type PendingReply struct {
+	ID        string
+	Body      []byte
+	CreatedAt time.Time
+}
+
+// PutReply keeps a reply until it is acknowledged; the latest body for an id wins.
+func (s *Store) PutReply(ctx context.Context, id string, body []byte) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO replies (id, body, created_at) VALUES (?, ?, ?)`,
+		id, body, time.Now().Unix())
+	return err
+}
+
+// RemoveReply forgets an acknowledged reply.
+func (s *Store) RemoveReply(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM replies WHERE id = ?`, id)
+	return err
+}
+
+// PendingReplies lists what is still to be delivered, oldest first.
+func (s *Store) PendingReplies(ctx context.Context, limit int) ([]PendingReply, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, body, created_at FROM replies ORDER BY created_at ASC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingReply
+	for rows.Next() {
+		var r PendingReply
+		var created int64
+		if err := rows.Scan(&r.ID, &r.Body, &created); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = time.Unix(created, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // -- builds -------------------------------------------------------------------------
