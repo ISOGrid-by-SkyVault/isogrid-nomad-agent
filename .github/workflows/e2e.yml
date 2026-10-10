@@ -1,0 +1,74 @@
+# End-to-end check of the agent built from this commit, against the live
+# platform: a cluster is registered, this build is installed with install.sh
+# in a throwaway Swarm on the runner, an order makes the round trip, an
+# application is deployed through the agent, and everything is removed.
+#
+# The check itself lives with the platform's other end-to-end checks
+# (e2e/tests/90_nomad_agent.py in the platform repository), so the platform
+# and the agent are held to the same script.
+#
+# Repository variable ISOGRID_E2E_ENABLED=true switches it on.
+# Repository secrets (Settings -> Secrets and variables -> Actions):
+#   ISOGRID_E2E_USERNAME, ISOGRID_E2E_PASSWORD   the test account: an owner or
+#                                                administrator of its organization
+#   ISOGRID_PLATFORM_REPO_TOKEN                  read access to the platform
+#                                                repository's contents
+# Registering the cluster is charged to the test organization at the Nomad
+# price and refunded for the unused time when the check deletes it, so the
+# organization needs at least one period's price in credit.
+
+name: End-to-end check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: isogrid-nomad-e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    # Off until the repository variable ISOGRID_E2E_ENABLED is set to true,
+    # so that a push before the secrets exist is not a red run.
+    if: vars.ISOGRID_E2E_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ISOGRID_E2E_USERNAME: ${{ secrets.ISOGRID_E2E_USERNAME }}
+      ISOGRID_E2E_PASSWORD: ${{ secrets.ISOGRID_E2E_PASSWORD }}
+      ISOGRID_E2E_API_URL: ${{ vars.ISOGRID_E2E_API_URL || 'https://api.isogrid.skyvault.pro' }}
+      ISOGRID_E2E_CONSOLE_URL: ${{ vars.ISOGRID_E2E_CONSOLE_URL || 'https://isogrid.skyvault.pro' }}
+      ISOGRID_E2E_KEYCLOAK_URL: ${{ vars.ISOGRID_E2E_KEYCLOAK_URL || 'https://isogrid.skyvault.pro/auth' }}
+      ISOGRID_E2E_PREFIX: agentci
+      ISOGRID_E2E_NOMAD_SPAWN_IMAGE: isogrid/nomad-agent:ci
+      ISOGRID_E2E_NOMAD_INSTALLER: ${{ github.workspace }}/install.sh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the agent image from this commit
+        run: docker build -t isogrid/nomad-agent:ci .
+
+      - name: Fetch the platform's checks
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.ISOGRID_PLATFORM_REPOSITORY || 'Arka-cell/SkyVault' }}
+          token: ${{ secrets.ISOGRID_PLATFORM_REPO_TOKEN }}
+          path: platform
+          sparse-checkout: e2e
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run the Nomad check
+        run: python platform/e2e/run.py nomad
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-reports
+          path: platform/e2e/reports/
+          retention-days: 14
